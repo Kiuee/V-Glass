@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name=".GlassApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LiquidGlass">
+
+        <!-- Xposed 模块声明 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <!-- 经典入口(assets/xposed_init)兼容所有 LSPosed 版本；此值必须低于框架支持的最大 API，
+             否则管理器会将模块标记为不兼容（作用域页异常）。现代入口见 META-INF/xposed/java_init.list -->
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="vivo 应用商店底栏替换为液态玻璃底栏（Kyant0/AndroidLiquidGlass，实时折射真实内容）" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
+
+        <!-- LSPosed 服务 binder 接收入口：管理器通过该 provider 调用 SendBinder 推送 binder。
+             service AAR 也声明了同 authority 的 io.github.libxposed.service.XposedProvider（实测
+             并不会被清单合并丢弃），必须显式移除，否则同一 APK 内重复 authority 无法安装。
+             BridgeProvider 复刻库实现并插入推送计数（库类为 final 无法继承），逻辑须与库保持一致。 -->
+        <provider
+            android:name=".hook.BridgeProvider"
+            android:authorities="${applicationId}.XposedService"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            tools:node="remove" />
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

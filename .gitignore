@@ -1,0 +1,20 @@
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+*.iml
+
+# Kotlin
+.kotlin/
+
+# ZCode 会话产物
+.zcode/
+
+# 本机路径
+local.properties
+
+# 签名与密钥（本模块用 debug 签名出 release，仍不纳入版本控制）
+*.jks
+*.keystore

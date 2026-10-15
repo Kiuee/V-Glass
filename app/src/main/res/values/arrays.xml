@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed 经典入口的作用域声明（现代入口见 META-INF/xposed/scope.list）。
+         新增适配应用时两处同步添加包名。 -->
+    <string-array name="xposed_scope">
+        <item>com.bbk.appstore</item>
+        <item>com.vivo.gallery</item>
+    </string-array>
+</resources>

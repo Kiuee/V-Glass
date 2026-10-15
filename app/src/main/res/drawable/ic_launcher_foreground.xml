@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 液态玻璃胶囊：底栏剪影 + 高光 -->
+    <path
+        android:fillColor="#3350B0F5"
+        android:pathData="M26,44 a20,20 0 0 1 20,-20 h16 a20,20 0 0 1 20,20 v20 a20,20 0 0 1 -20,20 h-16 a20,20 0 0 1 -20,-20 z" />
+    <path
+        android:fillColor="#808FDBFF"
+        android:pathData="M34,46 a8,8 0 0 1 8,-8 h6 a4,4 0 0 1 0,8 h-6 a2,2 0 0 0 -2,2 v6 a4,4 0 0 1 -8,0 z" />
+    <path
+        android:fillColor="#FF7FD4FF"
+        android:pathData="M42,54 h24 a3,3 0 0 1 0,6 h-24 a3,3 0 0 1 0,-6 z" />
+</vector>

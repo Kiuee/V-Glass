@@ -1,0 +1,7 @@
+# Xposed 入口按类名字符串反射实例化（META-INF/xposed/java_init.list 与 assets/xposed_init），
+# R8 改名/移除会导致模块在 LSPosed 中失效，必须整体保留
+-keep class com.moji.liquidglass.hook.HookEntry { *; }
+-keep class com.moji.liquidglass.hook.LegacyHookEntry { *; }
+
+# libxposed service 库（已打包）：内部经 binder 反射通信，保守保留（体积很小）
+-keep class io.github.libxposed.** { *; }
