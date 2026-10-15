@@ -66,14 +66,11 @@ class TabExtractor(private val descriptor: TabBarDescriptor) {
         } catch (_: Throwable) {
             return true
         }
-        for (role in listOf(TabRole.ICON_LOTTIE, TabRole.REFRESH_LOTTIE)) {
-            val id = roleId(tabView.context, role)
-            if (id == 0) continue
-            val lottie = tabView.findViewById<View>(id) ?: continue
-            val ready = runCatching { getComposition.invoke(lottie) != null }.getOrDefault(true)
-            if (!ready) return false
-        }
-        return true
+        // 只要求"会被镜像的那个 Lottie"（可见优先，与 findLottieView 同一解析规则）合成已加载。
+        // 隐藏的备选 Lottie（如首页刷新态 lottie_view_refresh）应用可能懒加载合成、长期为 null，
+        // 一并检查会让就绪判定永远不通过 → 探测空转、底栏永远不换（保持重构前的判定口径）。
+        val lottie = findLottieView(tabView) ?: return true
+        return runCatching { getComposition.invoke(lottie) != null }.getOrDefault(true)
     }
 
     /** 提取玻璃栏装配参数。主线程调用（需要已完成布局的视图）。 */

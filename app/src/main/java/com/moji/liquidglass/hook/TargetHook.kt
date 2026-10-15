@@ -142,12 +142,20 @@ object TargetHook {
         val tabViews = bar?.let { adapter.tabViewsOf(it) } ?: emptyList()
         val ready = bar != null && adapter.readyToInstall(tabViews, activity.classLoader)
         if (!ready) {
+            // 里程碑日志：未就绪时按 10 次间隔输出探测状态，卡点（bar/tabs/ready）一眼可辨
+            if (attempt == 0 || attempt % 10 == 0) {
+                facade.log(
+                    android.util.Log.INFO,
+                    "probe(${adapter.displayName}) attempt=$attempt bar=${bar != null} tabViews=${tabViews.size} ready=$ready",
+                )
+            }
             if (attempt + 1 >= MAX_ATTEMPTS) {
                 scheduled.remove(activity)
                 if (giveUpLogged.add(System.identityHashCode(activity))) {
                     facade.log(
                         android.util.Log.WARN,
-                        "bottom tab bar not found after $MAX_ATTEMPTS attempts, give up (${adapter.displayName})",
+                        "bottom tab bar not found after $MAX_ATTEMPTS attempts, give up (${adapter.displayName}) " +
+                            "bar=${bar != null} tabViews=${tabViews.size}",
                     )
                 }
                 return
