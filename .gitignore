@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# 构建产物（assembleRelease 复制出的 apk/.dm/metadata）
+/app/release/
+
 # IDE
 .idea/
 *.iml
