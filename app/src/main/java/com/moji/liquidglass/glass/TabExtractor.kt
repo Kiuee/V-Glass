@@ -18,6 +18,12 @@ enum class IconMode {
 
     /** 镜像整个 tab 视图（图标/标签/角标一体，普通应用通用）。 */
     WHOLE_TAB,
+
+    /** 整条目镜像：tab 内容全自绘、无图标/标签子视图的应用（如微博 TabViewGroupV2
+     *  在 Canvas 上画图标+角标+文字），把整个条目视图按原生布局镜像为 tab 内容。
+     *  条目自身携带选中态外观（drawable state_checked + 文字色切换），玻璃侧无需再
+     *  绘制标签，也不做折射染色（tintRefractionContent=false）——染色会盖掉原生配色。 */
+    WHOLE_TAB_FULL,
 }
 
 /** 底栏结构描述符：适配器声明目标应用的底栏形态，提取引擎按此工作。 */
@@ -56,6 +62,10 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
 
     private val idCache = HashMap<String, Int>()
 
+    /** 配色注入缝（适配器可选）：自绘 tab 无标签 TextView 可取色时，由适配器经 hook
+     *  捕获应用的文字内容色/强调色后从这里供给，返回 null = 保持提取结果。 */
+    var colorOverride: (() -> Pair<Color?, Color?>?)? = null
+
     private fun idOf(context: Context, name: String): Int =
         idCache.getOrPut(name) { context.resources.getIdentifier(name, "id", context.packageName) }
 
@@ -91,21 +101,24 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
     fun extract(tabViews: List<View>): GlassBarSpec? {
         if (tabViews.isEmpty()) return null
         return when (descriptor.iconMode) {
-            IconMode.WHOLE_TAB -> extractWholeTab(tabViews)
+            IconMode.WHOLE_TAB, IconMode.WHOLE_TAB_FULL -> extractWholeTab(tabViews)
             IconMode.LOTTIE_RESOLVE -> extractLottieResolve(tabViews)
         }
     }
 
     /** WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）+ 提取标签文本与配色
-     *  （玻璃层用统一样式绘制，观感/大小/颜色与商店同构）。 */
+     *  （玻璃层用统一样式绘制，观感/大小/颜色与商店同构）。
+     *  WHOLE_TAB_FULL（微博）：整个条目视图即镜像内容（iconView = tab 视图本身），
+     *  玻璃层不绘制标签（标签在镜像里、配色由应用自绘状态驱动）。 */
     private fun extractWholeTab(tabViews: List<View>): GlassBarSpec {
+        val full = descriptor.iconMode == IconMode.WHOLE_TAB_FULL
         val iconId = descriptor.elementIds["icon"]
         val labelsId = descriptor.elementIds["labels"]
         var contentColor: Color? = null
         var accentColor: Color? = null
         val tabs = tabViews.map { view ->
-            val iconElement = iconId?.let { view.findViewByIdByName(it) }
-            val labels = labelsId?.let { view.findViewByIdByName(it) }
+            val iconElement = if (full) view else iconId?.let { view.findViewByIdByName(it) }
+            val labels = if (full) null else labelsId?.let { view.findViewByIdByName(it) }
             val title = labels?.let(::visibleLabelText) ?: ""
             if (contentColor == null) {
                 val (content, accent) = extractTextColors(firstTextView(labels))
@@ -122,6 +135,12 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
                 badgeText = null,
                 badgeDot = false,
             )
+        }
+        if (contentColor == null || accentColor == null) {
+            colorOverride?.invoke()?.let { (content, accent) ->
+                if (contentColor == null) contentColor = content
+                if (accentColor == null) accentColor = accent
+            }
         }
         val initialIndex = tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
         return GlassBarSpec(
@@ -159,8 +178,9 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
 
     /** 装配后延迟补取配色（应用可能晚于装配才应用主题色，如清除后台后的暖启动加载态）：
      *  先按 WHOLE_TAB 的 labels 元素找标签 TextView，回退 LOTTIE_RESOLVE 角色 TextView，
-     *  返回第一组取到的 (内容色, 强调色)。 */
+     *  返回第一组取到的 (内容色, 强调色)；适配器注入了 colorOverride 时优先采用。 */
     fun extractLabelColors(tabViews: List<View>): Pair<Color?, Color?> {
+        colorOverride?.invoke()?.let { colors -> return colors }
         val labelsId = descriptor.elementIds["labels"]
         for (view in tabViews) {
             val labels = labelsId?.let { view.findViewByIdByName(it) }

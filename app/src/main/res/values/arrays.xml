@@ -6,5 +6,6 @@
         <item>com.bbk.appstore</item>
         <item>com.vivo.gallery</item>
         <item>com.vivo.space</item>
+        <item>com.sina.weibo</item>
     </string-array>
 </resources>

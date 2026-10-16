@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
@@ -355,25 +356,42 @@ fun GlassRoot(
                                 session.requestTick()
                             }) {
                                 if (tab.mirrorWholeTab) {
-                                    // WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）
-                                    // + 统一标签绘制——观感与商店同构
-                                    val iconView = tab.iconView
-                                    if (iconView != null) {
-                                        val iconPainter = remember(iconView) {
-                                            LiveViewPainter(iconView, tick)
+                                    if (session.extractor.descriptor.iconMode == IconMode.WHOLE_TAB_FULL) {
+                                        // WHOLE_TAB_FULL（微博）：tab 内容全自绘、无图标/标签子
+                                        // 视图，整个条目视图按原生布局配色镜像为 tab 内容（选中态
+                                        // 外观由条目自身驱动，玻璃层不再绘制标签）。1:1 居中：
+                                        // 槽位与原生条目宽高比不同，fit 缩放会双向拉伸变形
+                                        val tabView = tab.tabView ?: return@LiquidBottomTab
+                                        val fullPainter = remember(tabView) {
+                                            LiveTabFullPainter(tabView, tick)
                                         }
                                         Box(
-                                            Modifier.size(28.dp),
+                                            Modifier.fillMaxSize(),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Box(Modifier.size(24.dp).paint(iconPainter))
+                                            Box(Modifier.fillMaxSize().paint(fullPainter))
                                         }
-                                    }
-                                    if (style.showLabels) {
-                                        BasicText(
-                                            tab.title,
-                                            style = TextStyle(labelColor(index), 12.sp, fontWeight = FontWeight.Bold)
-                                        )
+                                    } else {
+                                        // WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）
+                                        // + 统一标签绘制——观感与商店同构
+                                        val iconView = tab.iconView
+                                        if (iconView != null) {
+                                            val iconPainter = remember(iconView) {
+                                                LiveViewPainter(iconView, tick)
+                                            }
+                                            Box(
+                                                Modifier.size(28.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Box(Modifier.size(24.dp).paint(iconPainter))
+                                            }
+                                        }
+                                        if (style.showLabels) {
+                                            BasicText(
+                                                tab.title,
+                                                style = TextStyle(labelColor(index), 12.sp, fontWeight = FontWeight.Bold)
+                                            )
+                                        }
                                     }
                                 } else {
                                     // LOTTIE_RESOLVE（商店）：每帧解析当前可见的 Lottie 视图（首页 ⇄ 刷新），
@@ -529,6 +547,31 @@ private class LiveViewPainter(
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
         canvas.scale(size.width / vw, size.height / vh)
+        view.draw(canvas)
+        canvas.restore()
+    }
+}
+
+/**
+ * WHOLE_TAB_FULL 整条目镜像 Painter：**1:1 原尺寸居中**绘制，绝不缩放——
+ * 玻璃槽位（barWidth/tab 数宽 × 栏高−8dp）与原生条目（屏宽/tab 数 × 应用栏高）
+ * 宽高比必然不同，fit 缩放会双向不等比拉伸（微博实测图标/文字变形）；原生条目
+ * 内容居中，1:1 居中后超出槽位的只有条目自身的空白边，视觉无裁切。
+ */
+private class LiveTabFullPainter(
+    private val view: View,
+    private val tick: IntState,
+) : Painter() {
+    override val intrinsicSize = Size.Unspecified
+
+    override fun DrawScope.onDraw() {
+        tick.intValue
+        val vw = view.width
+        val vh = view.height
+        if (vw <= 0 || vh <= 0 || !view.isShown) return
+        val canvas = drawContext.canvas.nativeCanvas
+        canvas.save()
+        canvas.translate((size.width - vw) / 2f, (size.height - vh) / 2f)
         view.draw(canvas)
         canvas.restore()
     }

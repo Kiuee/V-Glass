@@ -139,6 +139,15 @@ class GlassSession(
      *  刷新玻璃。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
     var onContentInvalidated: (() -> Unit)? = null
 
+    /** 拖动悬停预览激活中（引擎维护，适配器 hook 回调只读）。部分应用的条目选中翻转
+     *  方法带**切页副作用**（微博 TabViewGroupV2.setChecked(true) 的选中变化监听器直接
+     *  TabHost.setCurrentTabByTag）——预览翻转条目选中外观时会误触切页。适配器应 hook
+     *  该副作用入口并在本标志为 true 时吞掉；正式切页仍由松手后 onTabClicked 的
+     *  performClick 完成（那时标志已复位）。主线程读写。 */
+    @Volatile
+    var isTabPreviewActive: Boolean = false
+        private set
+
     /** 请求一次玻璃重绘（事件驱动模式）：底栏自身内容变化（拖动预览/点击转发等）时
      *  由交互点调用。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
     fun requestTick() {
@@ -199,6 +208,23 @@ class GlassSession(
     fun onTabClicked(index: Int) {
         armActivityWindow()
         val view = tabViews.getOrNull(index) ?: return
+        // WHOLE_TAB 预览收口（微博类应用）：预览已把目标条目 checked 翻成 true，而部分
+        // 应用的切页信号恰是 checked 的"变化"（微博 setChecked(false→true) 的监听器才调
+        // TabHost.setCurrentTabByTag；已选中时再 setChecked(true) 直接 return）——不还原
+        // 的话松手转发 performClick 是无效转换，页面永远不切。此处先把条目还原到预览前
+        // 状态（还原期间的切页副作用仍被吞咽：还原 origin 的 setChecked(true) 不切页，
+        // TabHost 本就停在 origin），再放行 performClick 产生真实变化 → 应用正常切页。
+        // 相册等无副作用应用：还原与后续应用自身的切换同栈完成、中间无绘制，无可见抖动。
+        val previewing = wholeTabPreviewOrigin >= 0
+        if (previewing) {
+            val origin = wholeTabPreviewOrigin
+            if (index != origin) {
+                isTabPreviewActive = true
+                setTabChecked(index, false)
+                setTabChecked(origin, true)
+            }
+        }
+        isTabPreviewActive = false // 正式点击切换：选中翻转的切页副作用必须放行
         val start = android.os.SystemClock.elapsedRealtime()
         view.performClick()
         val cost = android.os.SystemClock.elapsedRealtime() - start
@@ -240,9 +266,9 @@ class GlassSession(
      * 上一个选中 tab 复位到基础帧。主线程调用。
      */
     fun beginTabAnimation(index: Int) {
-        // WHOLE_TAB（相册）：选中变化（玻璃侧点击与应用侧同步都经此入口）伴随图标动画，
-        // 开满帧率窗口让镜像逐帧跟随
-        if (extractor.descriptor.iconMode == IconMode.WHOLE_TAB) armActivityWindow()
+        // WHOLE_TAB 系（相册/微博）：选中变化（玻璃侧点击与应用侧同步都经此入口）伴随
+        // 图标动画，开满帧率窗口让镜像逐帧跟随
+        if (extractor.descriptor.iconMode != IconMode.LOTTIE_RESOLVE) armActivityWindow()
         val lottie = lottieAt(index)
         if (lottie == null) {
             animLottie = null
@@ -282,11 +308,12 @@ class GlassSession(
      *
      * LOTTIE_RESOLVE（商店）：悬停 tab Lottie 直控选中末帧 + 标签 TextView 翻 isSelected
      * （颜色选择器随视图状态切换；子 TextView 翻转为 best-effort，duplicateParentState
-     * 的视图可能不生效）。WHOLE_TAB（相册）：翻转条目 setChecked（图标选中外观原生驱动，
-     * 镜像实时跟随；selectedTabIndex 同步冻结防读数污染）。
+     * 的视图可能不生效）。WHOLE_TAB 系（相册/微博）：翻转条目 setChecked（图标选中外观
+     * 原生驱动，镜像实时跟随；selectedTabIndex 同步冻结防读数污染）。
      */
     fun previewTabChange(target: Int) {
-        if (extractor.descriptor.iconMode == IconMode.WHOLE_TAB) {
+        if (extractor.descriptor.iconMode != IconMode.LOTTIE_RESOLVE) {
+            isTabPreviewActive = true // 预览翻转选中外观期间，适配器吞掉应用的切页副作用
             armActivityWindow()
             previewWholeTab(target)
             return
@@ -417,6 +444,7 @@ class GlassSession(
     /** 拖动结束（LiquidBottomTabs onDragStopped 回到原选中 tab 时调用）：全部条目恢复
      *  原静态图标、原 tab 回选中态，预览状态清零。幂等。 */
     fun endTabPreview() {
+        isTabPreviewActive = false // 预览结束：还原的 setChecked 走应用原生语义（已在原页，无切页）
         val origin = wholeTabPreviewOrigin.takeIf { it >= 0 }
             ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
         for (i in 0 until savedPreviewDrawables.size()) {
