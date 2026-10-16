@@ -6,8 +6,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.lifecycle.findViewTreeViewModelStoreOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.findViewTreeSavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 /**
@@ -48,18 +51,11 @@ object GlassInstaller {
         }
 
         val composeView = ComposeView(activity)
-        // 在挂载前把 owner 写进视图树标签（根视图 + ComposeView 双处），
-        // 否则 Compose 解析 window recomposer 时抛 ViewTreeLifecycleOwner not found 崩溃宿主
-        runCatching {
-            activity.window?.decorView?.let { decor ->
-                decor.setViewTreeLifecycleOwner(owner)
-                decor.setViewTreeViewModelStoreOwner(owner)
-                decor.setViewTreeSavedStateRegistryOwner(owner)
-            }
-            composeView.setViewTreeLifecycleOwner(owner)
-            composeView.setViewTreeViewModelStoreOwner(owner)
-            composeView.setViewTreeSavedStateRegistryOwner(owner)
-        }
+        // 玻璃覆盖层对无障碍整树隐身：Compose 语义树发的 a11y 事件会触发系统侧对整窗
+        // 节点树的 prefetch（沿祖先兄弟遍历），命中商店自带 TabView 有缺陷的无障碍节点
+        // （解析自身缺失的 string 资源）→ 应用主线程 Resources$NotFoundException 闪退。
+        // NO_HIDE_DESCENDANTS 让框架完全跳过本覆盖层，prefetch 不再被触发。
+        composeView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
 
         val session = GlassSession(
             appRoot = appRoot,
@@ -68,6 +64,26 @@ object GlassInstaller {
             composeView = composeView,
             extractor = extractor,
         )
+
+        // 在挂载前把 owner 写进视图树标签（根视图 + ComposeView 双处），
+        // 否则 Compose 解析 window recomposer 时抛 ViewTreeLifecycleOwner not found 崩溃宿主
+        runCatching {
+            activity.window?.decorView?.let { decor ->
+                // 记住装配前的原 owner，restore 时换回（避免模块 owner 永久覆盖应用自身的）
+                session.attachDecorOwners(
+                    decor,
+                    decor.findViewTreeLifecycleOwner(),
+                    decor.findViewTreeViewModelStoreOwner(),
+                    decor.findViewTreeSavedStateRegistryOwner(),
+                )
+                decor.setViewTreeLifecycleOwner(owner)
+                decor.setViewTreeViewModelStoreOwner(owner)
+                decor.setViewTreeSavedStateRegistryOwner(owner)
+            }
+            composeView.setViewTreeLifecycleOwner(owner)
+            composeView.setViewTreeViewModelStoreOwner(owner)
+            composeView.setViewTreeSavedStateRegistryOwner(owner)
+        }
 
         composeView.setContent {
             GlassRoot(appRoot = appRoot, spec = spec, session = session)

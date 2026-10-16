@@ -66,7 +66,9 @@ import kotlin.math.sign
  * （渲染在液泡之上，用于角标等不应被液泡折射着色的元素，几何与折射副本层一致）；
  * 新增 onPreviewTabChanged（拖动中液泡悬停 tab 变化回调，供宿主做选中预览）；
  * 新增 onSelectedTabTapped（原地点击已选中 tab 回调——液泡手势层盖住内容层，
- * 该点击不会到达 LiquidBottomTab，由宿主转发实现原生"再点一次已选中 tab"行为）。
+ * 该点击不会到达 LiquidBottomTab，由宿主转发实现原生"再点一次已选中 tab"行为）；
+ * 新增 tintRefractionContent（折射副本层是否整层强调色 tint：LOTTIE_RESOLVE 与 WHOLE_TAB
+ * 两模式均开启——选中/悬停 tab 在液泡内呈强调色，观感全局一致）。
  */
 @Composable
 fun LiquidBottomTabs(
@@ -80,6 +82,7 @@ fun LiquidBottomTabs(
     accentColor: Color? = null,
     onPreviewTabChanged: ((Int) -> Unit)? = null,
     onSelectedTabTapped: ((Int) -> Unit)? = null,
+    tintRefractionContent: Boolean = true,
     content: @Composable RowScope.() -> Unit,
     overlayContent: (@Composable RowScope.() -> Unit)? = null
 ) {
@@ -256,7 +259,13 @@ fun LiquidBottomTabs(
                     .height(barHeight - 8f.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4f.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(resolvedAccentColor)),
+                    .graphicsLayer(
+                        colorFilter = if (tintRefractionContent) {
+                            ColorFilter.tint(resolvedAccentColor)
+                        } else {
+                            null
+                        },
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 content = content
             )

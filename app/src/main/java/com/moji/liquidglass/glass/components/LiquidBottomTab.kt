@@ -12,7 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.kyant.shapes.Capsule
 
@@ -36,7 +35,10 @@ fun RowScope.LiquidBottomTab(
             .clickable(
                 interactionSource = null,
                 indication = null,
-                role = Role.Tab,
+                // 不设 role：Role.Tab 会让 Compose a11y 委托经宿主 Resources 解析
+                // androidx.compose.ui 的 string/tab（角色描述）——宿主资源表没有该 id，
+                // 无障碍遍历即 Resources$NotFoundException 崩溃宿主（商店启动闪退根因）。
+                // 玻璃栏是装饰层（真实交互经 performClick 转发给原生底栏），无需角色语义。
                 onClick = onClick
             )
             .fillMaxHeight()

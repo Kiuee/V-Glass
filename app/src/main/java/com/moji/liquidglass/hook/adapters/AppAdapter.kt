@@ -37,6 +37,9 @@ interface AppAdapter {
 
     fun matches(activity: Activity): Boolean = activity.packageName == targetPackage
 
+    /** 探测页面门控：默认全部 Activity 都探测；适配器可限定为主 Tab Activity 等。 */
+    fun shouldProbe(activity: Activity): Boolean = true
+
     fun createExtractor(): TabExtractor = TabExtractor(descriptor)
 
     /** 装配就绪判定：tab 数合法 + 应用侧状态就绪（如 Lottie 合成加载完成）。 */
@@ -81,6 +84,52 @@ interface AppAdapter {
                 }
                 window.decorView.requestApplyInsets()
             }
+        }
+
+        /**
+         * hook 内容重绘信号源（事件驱动 tick，见 `GlassSession.tickEventDriven`）：
+         * 这些类的 `onDraw` = 应用内容真正重绘的时刻（滚动/动画期间每帧触发、静止时
+         * 不触发），先于玻璃绘制、同一 traversal 内生效——静止零重绘且满帧率无拍频。
+         *
+         * 沿类层次向上找 `onDraw` 的声明点（子类未覆写时落在父类实现并对该父类全部
+         * 实例生效，如内容容器继承 RecyclerView 时 hook 到 RecyclerView.onDraw）；
+         * **绝不落在 `android.view.View` 的空实现**（那会拦截全进程所有视图，过热）。
+         * 同一声明点只 hook 一次。返回成功覆盖的信号类数（0 = 无可用信号源，调用方
+         * 应禁用事件驱动 tick 回退每帧渲染，否则玻璃停更）。
+         */
+        fun hookContentDrawSignals(
+            facade: HookFacade,
+            loader: ClassLoader,
+            classNames: List<String>,
+            onSignal: (className: String) -> Unit,
+        ): Int {
+            var hooked = 0
+            val seenDeclarations = HashSet<Class<*>>()
+            for (className in classNames) {
+                val clazz = runCatching { Class.forName(className, true, loader) }.getOrNull() ?: continue
+                var target: java.lang.reflect.Method? = null
+                var c: Class<*>? = clazz
+                while (c != null && c != View::class.java) {
+                    val m = runCatching {
+                        c.getDeclaredMethod("onDraw", android.graphics.Canvas::class.java)
+                    }.getOrNull()
+                    if (m != null) {
+                        target = m
+                        break
+                    }
+                    c = c.superclass
+                }
+                val method = target ?: continue
+                if (seenDeclarations.add(method.declaringClass)) {
+                    runCatching {
+                        facade.around(method, null) { onSignal(className); null }
+                    }.onFailure {
+                        facade.log(android.util.Log.WARN, "hook content signal failed: $className", it)
+                    }
+                }
+                hooked++
+            }
+            return hooked
         }
     }
 }

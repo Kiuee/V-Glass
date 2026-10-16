@@ -1,6 +1,8 @@
 package com.moji.liquidglass.glass
 
 import android.view.View
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -9,7 +11,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
@@ -48,9 +49,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.lerp
 import com.moji.liquidglass.glass.components.LiquidBottomTab
 import com.moji.liquidglass.glass.components.LiquidBottomTabs
 import kotlinx.coroutines.flow.collectLatest
+import kotlin.math.roundToInt
 
 /**
  * 玻璃底栏（覆盖层模式的条带布局）。
@@ -59,10 +62,16 @@ import kotlinx.coroutines.flow.collectLatest
  * 跨分支绘制内容视图的胶囊条带（view.draw 不要求同树），tick 驱动逐帧采样，滚动折射实时。
  *
  * 布局：ComposeView（WRAP_CONTENT、Gravity.BOTTOM）→ 根 Box 顶部 48dp 为辉光/液泡
- * 放大余量；玻璃栏底边内边距 = 应用真实导航栏 inset（navInsetProvider 三级回退：原容器
- * paddingBottom → rootWindowInsets 的 navigationBars → Compose insets）——玻璃栏抬升
- * 到小白条上方，下方条带透出全出血的信息流内容。
+ * 放大余量；玻璃栏底边内边距 = 应用真实导航栏 inset（navInsetProvider 三级回退）——
+ * 玻璃栏抬升到小白条上方，下方条带透出全出血的信息流内容。
  * 二楼下拉位移经 GlassBarState 驱动 graphicsLayer 跟随，与原软件行为一致。
+ *
+ * 多目标：渲染由 GlassBarSpec（适配器提取）驱动——
+ * - LOTTIE_RESOLVE（商店）：每帧解析可见 Lottie 图标 + Compose 标签 + 角标覆盖层，
+ *   液泡折射副本整层强调色 tint（选中 tab 呈强调色）；
+ * - WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）+ 统一标签绘制，
+ *   折射副本同样整层强调色 tint（与商店观感一致，强调色取自应用标签选择器）；
+ *   mirrorVisibleGate 跟随原生页面隐藏整条玻璃栏。
  */
 @Composable
 fun GlassRoot(
@@ -72,7 +81,10 @@ fun GlassRoot(
 ) {
     val density = LocalDensity.current
     val tick = remember { mutableIntStateOf(0) }
-    val backdrop = remember(appRoot) {
+    // tick 门控时间戳与内容重绘脏标记（帧循环与内容重绘信号共用，主线程）
+    val tickGate = remember { LongArray(1) }
+    val contentDirty = remember { booleanArrayOf(false) }
+    val backdrop = remember(appRoot, session) {
         ClippedViewBackdrop(
             view = appRoot,
             tick = { tick.intValue },
@@ -81,11 +93,37 @@ fun GlassRoot(
                 appRoot.getLocationOnScreen(out)
                 Offset(out[0].toFloat(), out[1].toFloat())
             },
+            dedupe = { session.dedupeBackdropSampling },
+            log = { session.logger?.invoke(it) },
         )
     }
 
     // 底部 inset：优先应用侧真实值（navInsetProvider），不可用时回退 Compose insets
     var bottomInset by remember { mutableIntStateOf(-1) }
+
+    // 样式（模块设置页可调，hook 层同步到 GlassInstaller，帧循环检测变化驱动重组）
+    var style by remember { mutableStateOf(GlassInstaller.glassStyle) }
+
+    var selectedIndex by remember { mutableIntStateOf(spec.initialIndex) }
+    // 底栏显隐跟随原生页面：false = 应用声明当前页不显示底栏（如大图详情页二级界面）
+    var barWanted by remember { mutableStateOf(true) }
+    // 应用配色（可延迟补取热替换）：装配可能早于应用应用主题色（清除后台后的暖启动
+    // 等加载态，取到缺省选择器），帧循环低频补取直到拿到真实配色
+    var specColors by remember(spec) { mutableStateOf(spec.contentColor to spec.accentColor) }
+
+    // 底栏重现（多选退出/大图返回/首次装配）的放大弹性动画：复刻点击底栏的按压放大
+    // 回弹——上行高阈值提前折返（快胀到 ~90% 峰值立刻回弹，借上行残余速度顺滑回落，
+    // 总时长 ~350ms 无停留平台），仅播放动画，无操作
+    val appearProgress = remember { Animatable(0f) }
+    LaunchedEffect(barWanted) {
+        if (barWanted) {
+            appearProgress.snapTo(0f)
+            appearProgress.animateTo(1f, spring(1f, 1800f, 0.1f))
+            appearProgress.animateTo(0f, spring(1f, 1200f, 0.001f))
+        } else {
+            appearProgress.snapTo(0f)
+        }
+    }
 
     // 标签文本跟随：原 TextView 文本变化（首页 ⇄ 刷新）实时同步到玻璃标签
     val labelTexts = remember(spec) {
@@ -94,7 +132,7 @@ fun GlassRoot(
         }
     }
     DisposableEffect(spec) {
-        val watchers = spec.tabs.mapIndexed { index, tab ->
+        val watchers = spec.tabs.mapIndexed { index, _ ->
             val tv = session.tabViews.getOrNull(index)?.let { session.extractor.findTextView(it) }
             if (tv == null) {
                 null
@@ -119,16 +157,13 @@ fun GlassRoot(
         }
     }
 
-    // 样式（模块设置页可调，hook 层同步到 GlassInstaller，帧循环检测变化驱动重组）
-    var style by remember { mutableStateOf(GlassInstaller.glassStyle) }
-
-    var selectedIndex by remember { mutableIntStateOf(spec.initialIndex) }
     // 应用 → 玻璃：帧循环读取原 TabView 的 isSelected（应用自身切页时保持同步）。
     LaunchedEffect(session) {
         var lastFrame = withFrameNanos { it }
         var frames = 0
         var sumNs = 0L
         var maxNs = 0L
+        var ticks = 0L
         while (true) {
             val now = withFrameNanos { it }
             val gapNs = now - lastFrame
@@ -138,18 +173,45 @@ fun GlassRoot(
             if (gapNs > maxNs) maxNs = gapNs
             if (frames >= 120) {
                 session.logger?.invoke(
-                    "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms"
+                    "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms " +
+                        "ticks=$ticks"
                 )
                 frames = 0
                 sumNs = 0
                 maxNs = 0
+                ticks = 0
                 // 低频重申原生底栏的 clickable 压制（应用刷新可能重设监听/可点击）
                 session.reassertClickSuppression()
+                // 装配期缺色的延迟补取（应用晚于装配才应用主题色的加载态自愈）
+                session.reextractColorsIfMissing(specColors.first, specColors.second)?.let {
+                    specColors = it
+                }
             }
             if (gapNs > 500_000_000) {
                 session.logger?.invoke("frame stall ${gapNs / 1_000_000}ms (main thread or render pipeline blocked)")
             }
-            tick.intValue++
+            // tick 驱动：默认每帧（商店等）；事件驱动模式（商店，内容信号 hook）
+            // 下由内容重绘脏标记驱动——脏标记在 vsync 的动画回调阶段转换为 tick（先于
+            // traversal），玻璃与应用内容同帧绘制；静止（无信号）零重绘，Surface/视图/
+            // 硬件层更新不再闪烁、空闲不烧 GPU。仅选中 tab 进入动画期间自驱。
+            // 相册 tickEventDriven=false：内容/交互活动窗口内每帧（满帧率转播图标/光效
+            // 动画、跟随滚动），静止后降 30fps 低频 tick——低频档仍持续采样，GL 合成空窗
+            // 的空白帧最多停留 ~33ms 自愈（不会像纯事件驱动那样冻帧），省下大部分空闲开销
+            val fullRate = !session.tickEventDriven || contentDirty[0] ||
+                session.tabAnimating || session.contentActive
+            if (fullRate) {
+                contentDirty[0] = false
+                val renderInterval = session.glassRenderIntervalNs
+                if (!session.tickEventDriven || renderInterval <= 0L || now - tickGate[0] >= renderInterval) {
+                    tickGate[0] = now
+                    tick.intValue++
+                    ticks++
+                }
+            } else if (now - tickGate[0] >= STATIC_TICK_INTERVAL_NS) {
+                tickGate[0] = now
+                tick.intValue++
+                ticks++
+            }
             GlassInstaller.navInsetProvider?.invoke()?.takeIf { it >= 0 }?.let {
                 if (it != bottomInset) {
                     bottomInset = it
@@ -157,13 +219,20 @@ fun GlassRoot(
                 }
             }
             GlassInstaller.glassStyle.let {
-                if (it != style) style = it
+                if (it != style) {
+                    style = it
+                    session.armActivityWindow() // 样式热切换满帧率过渡
+                }
             }
             if (session.isStale()) {
                 session.onStale?.invoke()
                 break
             }
             session.driveTabAnimation()
+            session.mirrorVisibleGate?.let { gate ->
+                val wanted = gate()
+                if (wanted != barWanted) barWanted = wanted
+            }
             val appSelected = session.selectedTabIndex()
             if (appSelected >= 0 && appSelected != selectedIndex) {
                 selectedIndex = appSelected
@@ -175,6 +244,12 @@ fun GlassRoot(
         snapshotFlow { selectedIndex }
             .collectLatest { session.beginTabAnimation(it) }
     }
+    // 内容重绘信号 → 置脏标记；帧循环在同一 vsync 的动画回调阶段统一转换为 tick
+    // （先于 traversal）——玻璃与应用内容同帧绘制，单次 traversal，无多余空跑
+    DisposableEffect(session) {
+        session.onContentInvalidated = { contentDirty[0] = true }
+        onDispose { session.onContentInvalidated = null }
+    }
     val fallbackInset = WindowInsets.navigationBars.getBottom(density)
     val effectiveInset = if (bottomInset >= 0) bottomInset else fallbackInset
     LaunchedEffect(effectiveInset) {
@@ -185,8 +260,8 @@ fun GlassRoot(
     // 系统主题在宿主内不可靠（应用可能强制明暗），以应用自身内容色明暗判定设计方向：
     // 未选中色偏深 → 浅色设计 → 纯黑，否则纯白。直接给纯黑/纯白，达到角标级的
     // 完全不透明对比；应用未提供取色时回退系统主题。
-    val contentColor = remember(spec, isLightTheme) {
-        val app = spec.contentColor?.copy(alpha = 1f)
+    val contentColor = remember(spec, isLightTheme, specColors) {
+        val app = specColors.first?.copy(alpha = 1f)
         val appIsDark = (app?.luminance() ?: if (isLightTheme) 0f else 1f) < 0.5f
         if (appIsDark) Color.Black else Color.White
     }
@@ -202,135 +277,170 @@ fun GlassRoot(
             maxWidth - style.minHorizontalMarginDp.dp * 2,
             (spec.tabs.size * MAX_TAB_WIDTH_DP + 8).dp
         ).coerceAtLeast(0.dp)
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .width(barWidth)
-                .padding(
-                    bottom = with(density) {
-                        effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp
+        // 应用声明隐藏底栏时（大图详情等二级页面）整条玻璃栏不渲染（与原生一致，且零绘制成本）
+        if (barWanted) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .width(barWidth)
+                    .padding(
+                        bottom = with(density) {
+                            effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp
+                        }
+                    )
+                    .graphicsLayer {
+                        translationY = GlassBarState.translationY
+                        // 重现弹性：与按压放大同公式（16dp/栏宽），appearProgress 脉冲驱动
+                        val widthPx = barWidth.toPx()
+                        if (widthPx > 0f) {
+                            val scale = lerp(1f, 1f + 16f.dp.toPx() / widthPx, appearProgress.value)
+                            scaleX = scale
+                            scaleY = scale
+                        }
                     }
-                )
-                .graphicsLayer { translationY = GlassBarState.translationY }
-        ) {
-            LiquidBottomTabs(
-                selectedTabIndex = { selectedIndex },
-                onTabSelected = { index ->
-                    // 拖动指示器路径：确定性转发——仅当应用尚未处于目标页时点击原 TabView。
-                    // 应用驱动的同步变更（selectedIndex 已等于该页）天然不转发，无竞态。
-                    if (session.selectedTabIndex() != index) {
-                        session.onTabClicked(index)
-                    }
-                },
-                backdrop = backdrop,
-                tabsCount = spec.tabs.size,
-                barHeight = style.barHeightDp.dp,
-                blurRadius = style.blurRadiusDp.dp,
-                accentColor = spec.accentColor,
-                onPreviewTabChanged = { session.previewTabChange(it) },
-                onSelectedTabTapped = { session.onTabClicked(it) },
-                content = {
-                    spec.tabs.forEachIndexed { index, tab ->
-                        LiquidBottomTab(onClick = {
-                            selectedIndex = index
+            ) {
+                LiquidBottomTabs(
+                    selectedTabIndex = { selectedIndex },
+                    onTabSelected = { index ->
+                        // 拖动指示器路径：确定性转发——仅当应用尚未处于目标页时点击原 TabView。
+                        // 应用驱动的同步变更（selectedIndex 已等于该页）天然不转发，无竞态。
+                        if (session.selectedTabIndex() != index) {
                             session.onTabClicked(index)
-                        }) {
-                            if (tab.mirrorWholeTab) {
-                                // WHOLE_TAB：整个原 tab 视图逐帧镜像直出（图标/标签/角标一体，零适配）
-                                val wholeView = tab.tabView
-                                if (wholeView != null) {
-                                    val painter = remember(wholeView) { LiveViewPainter(wholeView, tick) }
-                                    Box(Modifier.fillMaxSize().paint(painter))
-                                }
-                            } else {
-                                // LOTTIE_RESOLVE：每帧解析当前可见的 Lottie 视图（首页 ⇄ 刷新切换），
-                                // 解析不到回退装配期 3x 位图快照
-                                val iconPainter = remember(index) {
-                                    LiveIconPainter(
-                                        { session.tabViews.getOrNull(index)?.let { session.extractor.findLottieView(it) } },
-                                        tab.icon,
-                                        tick,
-                                    )
-                                }
-                                Box(
-                                    Modifier.size(28.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
+                            // 点击转发改动底栏原生视图（非 GL 内容源），事件驱动模式下需显式请求重绘
+                            session.requestTick()
+                        }
+                    },
+                    backdrop = backdrop,
+                    tabsCount = spec.tabs.size,
+                    barHeight = style.barHeightDp.dp,
+                    blurRadius = style.blurRadiusDp.dp,
+                    accentColor = specColors.second,
+                    onPreviewTabChanged = {
+                        session.previewTabChange(it)
+                        // 拖动预览翻动底栏原生选中态（非 GL 内容源），显式请求重绘
+                        session.requestTick()
+                    },
+                    onSelectedTabTapped = {
+                        session.onTabClicked(it)
+                        session.requestTick()
+                    },
+                    // 两模式统一：液泡折射副本整层强调色 tint——选中/悬停 tab 在液泡内呈强调色，
+                    // 强调色来自适配器提取的应用配色（缺省回退 iOS 蓝），观感全局一致
+                    tintRefractionContent = true,
+                    content = {
+                        spec.tabs.forEachIndexed { index, tab ->
+                            LiquidBottomTab(onClick = {
+                                selectedIndex = index
+                                session.onTabClicked(index)
+                                session.requestTick()
+                            }) {
+                                if (tab.mirrorWholeTab) {
+                                    // WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）
+                                    // + 统一标签绘制——观感与商店同构
+                                    val iconView = tab.iconView
+                                    if (iconView != null) {
+                                        val iconPainter = remember(iconView) {
+                                            LiveViewPainter(iconView, tick)
+                                        }
+                                        Box(
+                                            Modifier.size(28.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Box(Modifier.size(24.dp).paint(iconPainter))
+                                        }
+                                    }
+                                    if (style.showLabels) {
+                                        BasicText(
+                                            tab.title,
+                                            style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold)
+                                        )
+                                    }
+                                } else {
+                                    // LOTTIE_RESOLVE（商店）：每帧解析当前可见的 Lottie 视图（首页 ⇄ 刷新），
+                                    // 解析不到回退装配期 3x 位图快照
+                                    val iconPainter = remember(index) {
+                                        LiveIconPainter(
+                                            { session.tabViews.getOrNull(index)?.let { session.extractor.findLottieView(it) } },
+                                            tab.icon,
+                                            tick,
+                                        )
+                                    }
                                     Box(
-                                        Modifier
-                                            .size(24.dp)
-                                            .paint(iconPainter)
-                                    )
+                                        Modifier.size(28.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .size(24.dp)
+                                                .paint(iconPainter)
+                                        )
+                                    }
+                                    if (style.showLabels) {
+                                        BasicText(
+                                            labelTexts[index] ?: tab.title,
+                                            style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    overlayContent = {
+                        spec.tabs.forEachIndexed { _, tab ->
+                            // WHOLE_TAB 模式：角标/标签内嵌在整视图镜像里，无需覆盖层
+                            if (tab.mirrorWholeTab) return@forEachIndexed
+                            Column(
+                                Modifier
+                                    .fillMaxHeight()
+                                    .weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(Modifier.size(28.dp)) {
+                                    val badgeView = tab.badgeView
+                                    val badgePainter = remember(badgeView) {
+                                        badgeView?.let { LiveViewPainter(it, tick) }
+                                    }
+                                    if (badgePainter != null && badgeView != null) {
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .offset(x = (-2).dp, y = (-2).dp)
+                                                .size(
+                                                    with(density) { badgeView.width.toDp() },
+                                                    with(density) { badgeView.height.toDp() },
+                                                )
+                                                .paint(badgePainter)
+                                        )
+                                    } else if (tab.badgeText != null) {
+                                        BasicText(
+                                            tab.badgeText,
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .offset(x = (-2).dp, y = (-2).dp)
+                                                .background(accentBadge, RoundedCornerShape(50))
+                                                .padding(horizontal = 4.dp, vertical = 1.dp),
+                                            style = TextStyle(Color.White, 9.sp)
+                                        )
+                                    } else if (tab.badgeDot) {
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .offset(x = (-2).dp, y = (-2).dp)
+                                                .size(8.dp)
+                                                .background(accentBadge, CircleShape)
+                                        )
+                                    }
                                 }
                                 if (style.showLabels) {
-                                    BasicText(
-                                        labelTexts[index] ?: tab.title,
-                                        style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold)
-                                    )
+                                    // 占位：与真实标签同高，使角标列垂直几何与主层一致
+                                    BasicText(" ", style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold))
                                 }
                             }
                         }
                     }
-                },
-            overlayContent = {
-                // 角标覆盖层：渲染在液泡之上，任何选中状态下都原生红/原色直出
-                // （液泡折射副本层整层带强调色 tint，角标放主层会被染色）。
-                // 每列复刻主层 LiquidBottomTab 的几何（28dp 图标框 + 2dp 间距 +
-                // 标签占位），保证角标与主层图标位置逐像素对齐。
-                spec.tabs.forEachIndexed { _, tab ->
-                    // WHOLE_TAB 模式：角标/标签内嵌在整视图镜像里，无需覆盖层
-                    if (tab.mirrorWholeTab) return@forEachIndexed
-                    Column(
-                        Modifier
-                            .fillMaxHeight()
-                            .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Box(Modifier.size(28.dp)) {
-                            val badgeView = tab.badgeView
-                            val badgePainter = remember(badgeView) {
-                                badgeView?.let { LiveViewPainter(it, tick) }
-                            }
-                            if (badgePainter != null && badgeView != null) {
-                                Box(
-                                    Modifier
-                                        .align(Alignment.TopEnd)
-                                        .offset(x = (-2).dp, y = (-2).dp)
-                                        .size(
-                                            with(density) { badgeView.width.toDp() },
-                                            with(density) { badgeView.height.toDp() },
-                                        )
-                                        .paint(badgePainter)
-                                )
-                            } else if (tab.badgeText != null) {
-                                BasicText(
-                                    tab.badgeText,
-                                    Modifier
-                                        .align(Alignment.TopEnd)
-                                        .offset(x = (-2).dp, y = (-2).dp)
-                                        .background(accentBadge, RoundedCornerShape(50))
-                                        .padding(horizontal = 4.dp, vertical = 1.dp),
-                                    style = TextStyle(Color.White, 9.sp)
-                                )
-                            } else if (tab.badgeDot) {
-                                Box(
-                                    Modifier
-                                        .align(Alignment.TopEnd)
-                                        .offset(x = (-2).dp, y = (-2).dp)
-                                        .size(8.dp)
-                                        .background(accentBadge, CircleShape)
-                                )
-                            }
-                        }
-                        if (style.showLabels) {
-                            // 占位：与真实标签同高，使角标列垂直几何与主层一致
-                            BasicText(" ", style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold))
-                        }
-                    }
-                }
+                )
             }
-        )
         }
     }
 }
@@ -341,10 +451,15 @@ private val accentBadge = Color(0xFFEB5545)
  *  tab 少时栏收窄为内容宽居中；tab 多且未达上限时铺满可用宽。 */
 private const val MAX_TAB_WIDTH_DP = 70
 
+/** 相册静止档 tick 间隔：内容/交互活动窗口结束后降 30fps 低频采样（~33ms）。
+ *  低频档持续采样是关键——GL 合成空窗的空白录制最多停留一档即自愈，不会冻帧。 */
+private const val STATIC_TICK_INTERVAL_NS = 33_333_333L
+
 /**
- * tab 图标逐帧镜像 Painter：每帧经 [viewProvider] 解析当前应镜像的视图
- * （如 LOTTIE_RESOLVE 模式下应用切换 Lottie 可见性），直绘硬件画布——
- * 原色、原生动画、原生清晰度；解析不到时回退装配期的 3x 位图快照。
+ * 商店 tab 图标逐帧镜像 Painter：每帧经 [viewProvider] 解析当前应镜像的视图
+ * （LOTTIE_RESOLVE 模式下应用切换 Lottie 可见性，首页 ⇄ 刷新），直绘硬件画布——
+ * 原色、原生动画、原生清晰度；无视图可解析时回退装配期的 3x 位图快照。
+ * 可见性按 isShown（沿父链）判定：应用隐藏底栏时镜像同步消失。
  */
 private class LiveIconPainter(
     private val viewProvider: () -> View?,
@@ -359,24 +474,26 @@ private class LiveIconPainter(
         tick.intValue
         val target = viewProvider()
         val canvas = drawContext.canvas.nativeCanvas
-        if (target != null && target.width > 0 && target.height > 0 && target.visibility == View.VISIBLE) {
-            canvas.save()
-            canvas.scale(size.width / target.width, size.height / target.height)
-            target.draw(canvas)
-            canvas.restore()
+        if (target == null) {
+            // 装配期未取到 Lottie 视图：位图兜底
+            fallback?.let { bmp ->
+                dstRect.set(0f, 0f, size.width, size.height)
+                canvas.drawBitmap(bmp, null, dstRect, null)
+            }
             return
         }
-        fallback?.let { bmp ->
-            dstRect.set(0f, 0f, size.width, size.height)
-            canvas.drawBitmap(bmp, null, dstRect, null)
-        }
+        if (!target.isShown || target.width <= 0 || target.height <= 0) return
+        canvas.save()
+        canvas.scale(size.width / target.width, size.height / target.height)
+        target.draw(canvas)
+        canvas.restore()
     }
 }
 
 /**
- * 应用真实视图的逐帧镜像 Painter：draw 阶段读取帧循环 tick（Compose 在状态变化时
- * 触发重绘），把视图原样缩放绘制进 Compose 画布——原色、原始 alpha、原生动画，
- * 不做任何处理，与原底栏像素一致，与玻璃 backdrop 采样同帧同步。
+ * WHOLE_TAB 图标/角标逐帧镜像 Painter：固定镜像目标视图，直绘硬件画布——
+ * 原色、原始 alpha、原生动画，不做任何处理。可见性按 isShown（沿父链）判定：
+ * 应用隐藏底栏（如进入照片大图）时镜像同步消失。
  */
 private class LiveViewPainter(
     private val view: View,
@@ -388,7 +505,7 @@ private class LiveViewPainter(
         tick.intValue
         val vw = view.width
         val vh = view.height
-        if (vw <= 0 || vh <= 0 || view.visibility != View.VISIBLE) return
+        if (vw <= 0 || vh <= 0 || !view.isShown) return
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
         canvas.scale(size.width / vw, size.height / vh)

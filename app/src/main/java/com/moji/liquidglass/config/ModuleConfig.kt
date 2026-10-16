@@ -27,7 +27,25 @@ data class ModuleConfig(
     val barBlurDp: Float = 8f,
     /** 是否显示 tab 文字标签。 */
     val barShowLabels: Boolean = true,
+    /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
+     *  商店等默认路径不受影响。视觉异常时可远程配置改为 false 关闭。 */
+    val lightweightSampling: Boolean = true,
+    /** 玻璃特效渲染帧率上限（Hz，0 = 不限，默认）：仅适配器按需读取。实测不可用——
+     *  60Hz 特效叠加在 120fps 滚动内容上产生拍频，整页观感比 120↔60 摆动更差
+     *  （2025-10 真机结论），仅作实验旋钮保留。GPU 负载的正解方向见维护手册
+     *  "玻璃特效渲染限帧"条目。 */
+    val glassRenderCapHz: Int = 0,
+    /** tick 事件驱动（默认开）：玻璃仅在应用内容真正重绘时刷新，静止零重绘——
+     *  消除开发者选项 Surface/视图/硬件层更新的持续闪烁与空闲 GPU 烧灼。
+     *  需要适配器提供内容重绘信号（相册 = GLRootView.onDraw hook）；无信号源时
+     *  适配器不应启用，否则玻璃停更。 */
+    val eventDrivenTick: Boolean = true,
+    /** 按应用启用开关（包名 → 是否启用）：总开关开启的前提下逐应用生效；
+     *  未单独配置的应用默认启用。关闭后重启对应应用还原。 */
+    val appEnabled: Map<String, Boolean> = emptyMap(),
 ) {
+    /** 指定应用是否启用（仅按应用开关；总开关由调用方一并判定）。缺省启用。 */
+    fun appEnabledFor(packageName: String): Boolean = appEnabled[packageName] ?: true
     fun toJson(): String {
         val root = JSONObject()
         root.put("enabled", enabled)
@@ -37,6 +55,14 @@ data class ModuleConfig(
         root.put("barHeightDp", barHeightDp.toDouble())
         root.put("barBlurDp", barBlurDp.toDouble())
         root.put("barShowLabels", barShowLabels)
+        root.put("lightweightSampling", lightweightSampling)
+        root.put("glassRenderCapHz", glassRenderCapHz)
+        root.put("eventDrivenTick", eventDrivenTick)
+        if (appEnabled.isNotEmpty()) {
+            val apps = JSONObject()
+            for ((pkg, on) in appEnabled) apps.put(pkg, on)
+            root.put("appEnabled", apps)
+        }
         return root.toString()
     }
 
@@ -64,6 +90,14 @@ data class ModuleConfig(
                     barHeightDp = root.optDouble("barHeightDp", 64.0).toFloat(),
                     barBlurDp = root.optDouble("barBlurDp", 8.0).toFloat(),
                     barShowLabels = root.optBoolean("barShowLabels", true),
+                    lightweightSampling = root.optBoolean("lightweightSampling", true),
+                    glassRenderCapHz = root.optInt("glassRenderCapHz", 0),
+                    eventDrivenTick = root.optBoolean("eventDrivenTick", true),
+                    appEnabled = root.optJSONObject("appEnabled")?.let { apps ->
+                        buildMap {
+                            for (key in apps.keys()) put(key, apps.optBoolean(key, true))
+                        }
+                    } ?: emptyMap(),
                 )
             } catch (_: Throwable) {
                 DEFAULT

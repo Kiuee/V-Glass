@@ -3,6 +3,9 @@ package com.moji.liquidglass.glass
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.moji.liquidglass.config.ModuleConfig
 
 /** 玻璃栏样式参数（模块设置页可调，经 GlassInstaller.glassStyle 下发到玻璃层）。 */
@@ -81,9 +84,86 @@ class GlassSession(
     var originalContainerVisibility: Int = tabContainer.visibility
         private set
 
+    /** 装配时原底栏的 a11y 参与度，还原时恢复（装配后被 NO_HIDE_DESCENDANTS 隐身）。 */
+    var originalContainerImportance: Int = tabContainer.importantForAccessibility
+        private set
+
+    /** 装配前 decorView 上原有的 ViewTree owner（GlassInstaller 覆盖 decor owner 前捕获、
+     *  经 [attachDecorOwners] 注入，还原时恢复——避免模块 owner 永久污染应用自身解析）。 */
+    private var originalDecorOwners: Triple<Any?, Any?, Any?>? = null
+    private var originalDecorRef: java.lang.ref.WeakReference<View>? = null
+
+    /** 装配时（覆盖 decor owner 之前）由 GlassInstaller 注入的 owner 快照与载体视图。 */
+    fun attachDecorOwners(
+        decor: View,
+        lifecycle: Any?,
+        viewModel: Any?,
+        savedState: Any?,
+    ) {
+        originalDecorRef = java.lang.ref.WeakReference(decor)
+        originalDecorOwners = Triple(lifecycle, viewModel, savedState)
+    }
+
     /** 玻璃层检测到原视图树被应用重建（失联）时回调，hook 层据此重装。 */
     @Volatile
     var onStale: (() -> Unit)? = null
+
+    /** 镜像绘制门控（适配器注入）：返回 false 时玻璃镜像不绘制（应用要求隐藏底栏）。 */
+    @Volatile
+    var mirrorVisibleGate: (() -> Boolean)? = null
+
+    /** 背景采样去重（重内容页优化，适配器按配置打开）：true 时 ClippedViewBackdrop 每
+     *  tick 只把内容条带录制一次（RenderNode），三个玻璃节点回放同一录制——相册照片
+     *  网格为 GL 渲染，采样即触发 GL 绘制，3 次/帧 → 1 次/帧。false 保持各自直绘
+     *  （默认；商店路径不变）。 */
+    @Volatile
+    var dedupeBackdropSampling: Boolean = false
+
+    /** 玻璃特效渲染最小间隔（纳秒；0 = 每帧渲染，默认）。重内容页 GPU 预算紧张时
+     *  （如相册 GL 网格 + 三层 vibrancy/blur/lens 特效 @120Hz 会顶爆 8.3ms 帧预算，
+     *  触发刷新率调度 120↔60 摆动），适配器按配置设为 ~16ms 把特效重绘降到 60fps：
+     *  玻璃带折射/镜像/模糊 60fps（8dp 模糊下无感），帧循环其余工作仍每帧执行；
+     *  液泡拖拽/按压/手势高光/重现动画读各自动画状态独立失效，不受影响仍满帧率。 */
+    @Volatile
+    var glassRenderIntervalNs: Long = 0L
+
+    /** tick 事件驱动（适配器按内容重绘信号打开，如相册 GLRootView.onDraw hook）：
+     *  true 时帧循环不再每帧无条件 tick——应用内容静止时零重绘（不烧 GPU、开发者
+     *  选项的 Surface/视图/硬件层更新不再闪烁），内容重绘信号经 [onContentInvalidated]
+     *  驱动；选中 tab 进入动画期间由帧循环自驱，保证动画全程可见。false = 每帧 tick
+     *  （默认；商店路径不变）。 */
+    @Volatile
+    var tickEventDriven: Boolean = false
+
+    /** 内容重绘信号（[tickEventDriven] 时由 GlassRoot 注入）：应用内容真正重绘时调用，
+     *  刷新玻璃。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
+    var onContentInvalidated: (() -> Unit)? = null
+
+    /** 请求一次玻璃重绘（事件驱动模式）：底栏自身内容变化（拖动预览/点击转发等）时
+     *  由交互点调用。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
+    fun requestTick() {
+        onContentInvalidated?.invoke()
+    }
+
+    /** 选中 tab 的进入动画是否进行中（事件驱动模式下帧循环据此自驱 tick）。 */
+    val tabAnimating: Boolean get() = animLottie != null
+
+    // —— 相册的"静止降帧"档位：每帧渲染模式下，内容活动（GLRootView.onDraw）或底栏
+    //    交互（点击/预览/选中同步/样式变化）后的窗口期内满帧率；静止后降到
+    //    [STATIC_TICK_INTERVAL_MS]（30fps，GlassRoot 帧循环门控）。与旧事件驱动的本质
+    //    区别：静止档**仍以低频持续采样**，GL 合成空窗的空白帧最多停留 ~33ms 自愈，
+    //    不会冻帧；图标/光效动画在交互窗口的满帧率内完整转播 ———
+    @Volatile
+    private var activeUntilMs = 0L
+
+    /** 内容/交互活动窗口（满帧率档）：GLRootView.onDraw 信号与各交互点调用。主线程调用。 */
+    fun armActivityWindow(durationMs: Long = 1_000L) {
+        activeUntilMs = android.os.SystemClock.elapsedRealtime() + durationMs
+    }
+
+    /** 满帧率档是否生效（false = 静止，帧循环按 30fps 低频 tick）。 */
+    val contentActive: Boolean
+        get() = android.os.SystemClock.elapsedRealtime() < activeUntilMs
 
     /** 诊断日志出口（hook 层注入 facade.log）。 */
     @Volatile
@@ -93,17 +173,29 @@ class GlassSession(
     @Volatile
     var afterForward: (() -> Unit)? = null
 
-    /** 应用当前选中 tab 下标；读不到返回 -1。主线程调用。 */
-    fun selectedTabIndex(): Int = tabViews.indexOfFirst { it.isSelected }
+    /** 应用当前选中 tab 下标；读不到返回 -1。主线程调用。
+     *  WHOLE_TAB 拖动预览期间冻结为预览起点：预览翻转的是条目自身 isSelected
+     *  （setChecked 内部调 setSelected），不冻结会让帧循环误判应用已切页，
+     *  松手时 onTabSelected 守卫会跳过 performClick 转发。 */
+    fun selectedTabIndex(): Int {
+        wholeTabPreviewOrigin.takeIf { it >= 0 }?.let { return it }
+        return tabViews.indexOfFirst { it.isSelected }
+    }
 
     /** 玻璃 tab 被点击：转发到原 TabView（其 OnClickListener 会走应用自身的切页逻辑）。 */
     fun onTabClicked(index: Int) {
+        armActivityWindow()
         val view = tabViews.getOrNull(index) ?: return
         val start = android.os.SystemClock.elapsedRealtime()
         view.performClick()
         val cost = android.os.SystemClock.elapsedRealtime() - start
         if (cost > 100) {
             logger?.invoke("performClick(index=$index) blocked main thread for ${cost}ms")
+        }
+        if (wholeTabPreviewOrigin >= 0) {
+            // 拖动预览提交：清除冻结，交还应用真实选中读数（视觉由应用自身 setChecked 流程接管）
+            wholeTabPreviewOrigin = -1
+            wholeTabPreviewTarget = -1
         }
         afterForward?.invoke()
     }
@@ -132,6 +224,9 @@ class GlassSession(
      * 上一个选中 tab 复位到基础帧。主线程调用。
      */
     fun beginTabAnimation(index: Int) {
+        // WHOLE_TAB（相册）：选中变化（玻璃侧点击与应用侧同步都经此入口）伴随图标动画，
+        // 开满帧率窗口让镜像逐帧跟随
+        if (extractor.descriptor.iconMode == IconMode.WHOLE_TAB) armActivityWindow()
         val lottie = lottieAt(index)
         if (lottie == null) {
             animLottie = null
@@ -166,11 +261,20 @@ class GlassSession(
     }
 
     /**
-     * 拖动液泡的悬停预览：原选中 tab 立即回归未选中（lottie 基础帧 + 标签取消选中态，
-     * 子 TextView 翻转为 best-effort，duplicateParentState 的视图可能不生效），悬停 tab
-     * 预览选中末帧；拖回原 tab 时完全还原。同一目标去重。主线程调用。
+     * 拖动液泡的悬停预览：原选中 tab 立即回归未选中，悬停 tab 预览选中；拖回原 tab 时
+     * 完全还原。同一目标去重。主线程调用。
+     *
+     * LOTTIE_RESOLVE（商店）：悬停 tab Lottie 直控选中末帧 + 标签 TextView 翻 isSelected
+     * （颜色选择器随视图状态切换；子 TextView 翻转为 best-effort，duplicateParentState
+     * 的视图可能不生效）。WHOLE_TAB（相册）：翻转条目 setChecked（图标选中外观原生驱动，
+     * 镜像实时跟随；selectedTabIndex 同步冻结防读数污染）。
      */
     fun previewTabChange(target: Int) {
+        if (extractor.descriptor.iconMode == IconMode.WHOLE_TAB) {
+            armActivityWindow()
+            previewWholeTab(target)
+            return
+        }
         val targetLottie = lottieAt(target) ?: return
         if (targetLottie === previewLottie) return
         if (targetLottie === selectedLottie) {
@@ -206,6 +310,49 @@ class GlassSession(
         runCatching { tv.isSelected = selected }
     }
 
+    // —— WHOLE_TAB（条目级选中态，如相册 VNavMenuItem）拖动预览：直接翻转条目 checked——
+    /** 预览起点（原生选中读数冻结值），<0 = 预览未激活。 */
+    private var wholeTabPreviewOrigin = -1
+    /** 当前悬停预览目标，<0 = 无。 */
+    private var wholeTabPreviewTarget = -1
+    private val wholeTabSetChecked: java.lang.reflect.Method? = tabViews.firstOrNull()?.javaClass?.let { cls ->
+        runCatching { cls.getMethod("setChecked", Boolean::class.javaPrimitiveType) }.getOrNull()
+    }
+
+    /** WHOLE_TAB 悬停预览：上一个预览目标（或原选中）回归未选中，悬停目标预览选中；
+     *  拖回原 tab 完全还原并结束预览。 */
+    private fun previewWholeTab(target: Int) {
+        if (target == wholeTabPreviewTarget) return
+        if (wholeTabSetChecked == null) return
+        val origin = wholeTabPreviewOrigin.takeIf { it >= 0 }
+            ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
+                .also { wholeTabPreviewOrigin = it }
+        if (target == origin) {
+            if (wholeTabPreviewTarget >= 0) setTabChecked(wholeTabPreviewTarget, false)
+            setTabChecked(origin, true)
+            wholeTabPreviewTarget = -1
+            wholeTabPreviewOrigin = -1
+            return
+        }
+        val previous = wholeTabPreviewTarget
+        if (previous >= 0) {
+            setTabChecked(previous, false)
+        } else {
+            setTabChecked(origin, false)
+        }
+        setTabChecked(target, true)
+        wholeTabPreviewTarget = target
+    }
+
+    /** 翻转 WHOLE_TAB 条目的 checked 态：VNavMenuItem.setChecked 驱动图标选中外观与标签
+     *  显隐（内部调 setSelected），与应用自身切页同路径，无监听器副作用。best-effort。 */
+    private fun setTabChecked(index: Int, checked: Boolean) {
+        val view = tabViews.getOrNull(index) ?: return
+        val method = wholeTabSetChecked ?: return
+        runCatching { method.invoke(view, checked) }
+            .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }
+    }
+
     private fun setLottieProgress(lottie: View, progress: Float) {
         runCatching {
             lottie.javaClass.getMethod("setProgress", Float::class.javaPrimitiveType)
@@ -221,6 +368,21 @@ class GlassSession(
         (lottie.javaClass.getMethod("getDuration").invoke(lottie) as Int).toFloat()
     }.getOrNull()?.takeIf { it > 0f } ?: 400f
 
+    /** 装配期缺色的延迟补取（应用可能晚于装配才应用主题色，如清除后台后的暖启动加载态）。
+     *  当前有缺色且新取到不同值时返回新 (内容色, 强调色)，否则 null。主线程调用。 */
+    fun reextractColorsIfMissing(
+        contentColor: androidx.compose.ui.graphics.Color?,
+        accentColor: androidx.compose.ui.graphics.Color?,
+    ): Pair<androidx.compose.ui.graphics.Color?, androidx.compose.ui.graphics.Color?>? {
+        if (contentColor != null && accentColor != null) return null
+        val extracted = extractor.extractLabelColors(tabViews)
+        if (extracted.first == null && extracted.second == null) return null
+        if (extracted.first == contentColor && extracted.second == accentColor) return null
+        return extracted.also {
+            logger?.invoke("glass colors re-extracted: content=${it.first}, accent=${it.second}")
+        }
+    }
+
     /** 原视图树是否已被应用重建（tab 视图不再挂在本会话的 Compose 视图下）。 */
     fun isStale(): Boolean {
         val root = composeView.rootView
@@ -232,10 +394,14 @@ class GlassSession(
      * 守卫（isShown 类）、滚动监听、刷新状态机、Lottie 可见性恢复全部按原生逻辑工作
      * （GONE 会让点击转发的回顶+刷新分支失效——切页路径不检查可见性所以此前未察觉）；
      * 真实触摸穿透到信息流；performClick 转发直接调监听器、不受 clickable 影响。
+     * 同时把底栏对无障碍整树隐身（NO_HIDE_DESCENDANTS）：隐形视图本不该被 a11y 遍历，
+     * 且商店 TabView 的无障碍节点会解析自身缺失的 string 资源——系统 a11y prefetch
+     * 一旦走到它就 Resources$NotFoundException 主线程崩溃（商店启动闪退的根因链）。
      */
     fun suppressNatively() {
         tabContainer.visibility = View.VISIBLE
         tabContainer.alpha = 0f
+        tabContainer.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         setClickableTree(tabContainer, false)
     }
 
@@ -264,6 +430,15 @@ class GlassSession(
             tabContainer.alpha = 1f
             setClickableTree(tabContainer, true)
             tabContainer.visibility = originalContainerVisibility
+            tabContainer.importantForAccessibility = originalContainerImportance
+            // decorView 的 ViewTree owner 换回装配前的原值（仅当仍是同一棵装饰视图）
+            val decor = originalDecorRef?.get()
+            val owners = originalDecorOwners
+            if (decor != null && owners != null) {
+                decor.setViewTreeLifecycleOwner(owners.first as? androidx.lifecycle.LifecycleOwner)
+                decor.setViewTreeViewModelStoreOwner(owners.second as? androidx.lifecycle.ViewModelStoreOwner)
+                decor.setViewTreeSavedStateRegistryOwner(owners.third as? androidx.savedstate.SavedStateRegistryOwner)
+            }
         } catch (_: Throwable) {
         }
     }

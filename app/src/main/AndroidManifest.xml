@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- miuix-blur 声明 minSdk 33；本模块 hook 与模糊特性本身均以 API 33 为门槛
+         （AGSL 折射着色器），低版本由代码门控降级，不会触达库内高版本 API。 -->
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+
     <application
         android:name=".GlassApp"
         android:allowBackup="true"

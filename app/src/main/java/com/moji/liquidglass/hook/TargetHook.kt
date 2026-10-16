@@ -50,15 +50,16 @@ object TargetHook {
             GlassInstaller.dispatchResume(activity)
             GlassInstaller.glassStyle = GlassStyle.fromConfig(config())
             if (adapter.matches(activity)) {
+                // 总开关 + 按应用开关：任一关闭即还原已装配会话，跳过本应用全部模块行为
+                if (!config().enabled || !config().appEnabledFor(hostPackage)) {
+                    sessions.remove(activity)?.restore()
+                    scheduled.remove(activity)
+                    return@around null
+                }
                 if (adapter.tabActivityClassName != null &&
                     activity.javaClass.name == adapter.tabActivityClassName
                 ) {
                     adapter.onTabActivityResumed(activity, facade, config)
-                }
-                if (!config().enabled) {
-                    sessions.remove(activity)?.restore()
-                    scheduled.remove(activity)
-                    return@around null
                 }
                 scheduleProbe(activity, adapter, facade, config)
             }
@@ -94,6 +95,8 @@ object TargetHook {
         facade: HookFacade,
         config: () -> ModuleConfig,
     ) {
+        // 探测页面门控（如相册仅在主 Tab Activity 探测，避免其他页面的同类底栏误装）
+        if (!adapter.shouldProbe(activity)) return
         if (Build.VERSION.SDK_INT < 33) {
             if (scheduled.isEmpty()) {
                 facade.log(android.util.Log.WARN, "Android 13+ (API 33) required for liquid glass, skip (sdk=${Build.VERSION.SDK_INT})")

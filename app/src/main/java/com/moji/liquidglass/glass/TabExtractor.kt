@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
+import android.view.ViewGroup
 import android.widget.TextView
 import androidx.compose.ui.graphics.Color
 
@@ -32,13 +33,16 @@ data class TabBarDescriptor(
     val iconMode: IconMode = IconMode.LOTTIE_RESOLVE,
     /** 类名/id 失配时的位置启发式兜底探测。 */
     val fallbackProbe: Boolean = true,
+    /** WHOLE_TAB 元素级镜像：元素名 → 资源 id 名。只镜像这些子元素（排除 M3 选中胶囊
+     *  指示器与条目背景，观感对齐商店）；全部解析失败时回退整视图镜像。空 = 整视图镜像。 */
+    val elementIds: Map<String, String> = emptyMap(),
 )
 
 /**
  * 描述符驱动的 tab 提取器：从适配器解析出的 tab 视图列表提取玻璃栏所需
  * 全部数据（标题/选中/图标/角标/配色）。不感知具体应用——一切按 [descriptor] 工作。
  */
-class TabExtractor(private val descriptor: TabBarDescriptor) {
+class TabExtractor(val descriptor: TabBarDescriptor) {
 
     private val idCache = HashMap<String, Int>()
 
@@ -82,26 +86,99 @@ class TabExtractor(private val descriptor: TabBarDescriptor) {
         }
     }
 
-    /** WHOLE_TAB：整视图镜像，图标/标签/角标全部由原视图携带，玻璃层零适配。 */
+    /** WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）+ 提取标签文本与配色
+     *  （玻璃层用统一样式绘制，观感/大小/颜色与商店同构）。 */
     private fun extractWholeTab(tabViews: List<View>): GlassBarSpec {
+        val iconId = descriptor.elementIds["icon"]
+        val labelsId = descriptor.elementIds["labels"]
+        var contentColor: Color? = null
+        var accentColor: Color? = null
+        val tabs = tabViews.map { view ->
+            val iconElement = iconId?.let { view.findViewByIdByName(it) }
+            val labels = labelsId?.let { view.findViewByIdByName(it) }
+            val title = labels?.let(::visibleLabelText) ?: ""
+            if (contentColor == null) {
+                val (content, accent) = extractTextColors(firstTextView(labels))
+                contentColor = content
+                accentColor = accent
+            }
+            GlassTab(
+                title = title,
+                iconView = iconElement,
+                icon = null,
+                tabView = view,
+                mirrorWholeTab = true,
+                badgeView = null,
+                badgeText = null,
+                badgeDot = false,
+            )
+        }
         val initialIndex = tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
         return GlassBarSpec(
-            tabs = tabViews.map { view ->
-                GlassTab(
-                    title = "",
-                    iconView = null,
-                    icon = null,
-                    tabView = view,
-                    mirrorWholeTab = true,
-                    badgeView = null,
-                    badgeText = null,
-                    badgeDot = false,
-                )
-            },
-            initialIndex = initialIndex.coerceIn(0, tabViews.size - 1),
-            contentColor = null,
-            accentColor = null,
+            tabs,
+            initialIndex.coerceIn(0, tabViews.size - 1),
+            contentColor = contentColor,
+            accentColor = accentColor,
         )
+    }
+
+    /** 标签组内第一个文本视图（VMenuTextView 小/大标签，配色选择器一致）。 */
+    private fun firstTextView(labels: View?): TextView? {
+        val group = labels as? ViewGroup ?: return null
+        for (i in 0 until group.childCount) {
+            val child = group.getChildAt(i)
+            if (child is TextView) return child
+        }
+        return null
+    }
+
+    /** 文字颜色选择器取色：default=内容色；checked/selected 态=强调色（两态都缺省时为 null，
+     *  由 GlassRoot/LiquidBottomTabs 回退参考配色）。相册条目 checked 态、商店 selected 态。 */
+    private fun extractTextColors(tv: TextView?): Pair<Color?, Color?> {
+        if (tv == null) return null to null
+        return runCatching {
+            val csl = tv.textColors
+            val default = csl.defaultColor
+            val accent = listOf(android.R.attr.state_checked, android.R.attr.state_selected)
+                .firstNotNullOfOrNull { state ->
+                    csl.getColorForState(intArrayOf(state), default).takeIf { it != default }
+                }
+            Color(default) to accent?.let(::Color)
+        }.getOrDefault(null to null)
+    }
+
+    /** 装配后延迟补取配色（应用可能晚于装配才应用主题色，如清除后台后的暖启动加载态）：
+     *  先按 WHOLE_TAB 的 labels 元素找标签 TextView，回退 LOTTIE_RESOLVE 角色 TextView，
+     *  返回第一组取到的 (内容色, 强调色)。 */
+    fun extractLabelColors(tabViews: List<View>): Pair<Color?, Color?> {
+        val labelsId = descriptor.elementIds["labels"]
+        for (view in tabViews) {
+            val labels = labelsId?.let { view.findViewByIdByName(it) }
+            val colors = extractTextColors(firstTextView(labels))
+            if (colors.first != null || colors.second != null) return colors
+        }
+        for (view in tabViews) {
+            val colors = extractTextColors(findTextView(view))
+            if (colors.first != null || colors.second != null) return colors
+        }
+        return null to null
+    }
+
+    /** 标签组内可见的文本视图文本（小/大标签按选中态显隐）。 */
+    private fun visibleLabelText(labelsElement: View): String? {
+        if (labelsElement !is ViewGroup) return null
+        for (i in 0 until labelsElement.childCount) {
+            val child = labelsElement.getChildAt(i)
+            if (child is TextView && child.visibility == View.VISIBLE && !child.text.isNullOrBlank()) {
+                return child.text.toString()
+            }
+        }
+        return null
+    }
+
+    private fun View.findViewByIdByName(name: String): View? {
+        val id = context.resources.getIdentifier(name, "id", context.packageName)
+        return if (id == 0) null else findViewById(id)
     }
 
     /** LOTTIE_RESOLVE（商店）：Lottie 图标镜像 + Compose 标签/角标 + 颜色选择器取色。 */
@@ -130,17 +207,11 @@ class TabExtractor(private val descriptor: TabBarDescriptor) {
                     },
                 )
             )
-            // 颜色取自文字选择器：default=内容色，selected=强调色
+            // 颜色取自文字选择器：default=内容色，checked/selected=强调色
             if (contentColor == null) {
-                findTextView(tabView)?.let { tv ->
-                    runCatching {
-                        val csl = tv.textColors
-                        contentColor = Color(csl.defaultColor)
-                        val selected =
-                            csl.getColorForState(intArrayOf(android.R.attr.state_selected), csl.defaultColor)
-                        if (selected != csl.defaultColor) accentColor = Color(selected)
-                    }
-                }
+                val (content, accent) = extractTextColors(findTextView(tabView))
+                contentColor = content
+                accentColor = accent
             }
         }
         if (tabs.isEmpty()) return null

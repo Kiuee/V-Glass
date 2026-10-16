@@ -13,8 +13,8 @@ android {
         applicationId = "com.moji.liquidglass"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {
@@ -57,7 +57,18 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.activity.compose)
+    // miuix 弹层（OverlayDropdownPopup 等）的返回键关闭依赖 navigationevent，
+    // 且要求 Activity 侧提供 NavigationEventDispatcherOwner（activity 1.11+ 自带）
+    implementation(libs.androidx.navigationevent.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // 动态色板（PaletteStyle / ColorSpec / AMOLED）
+    implementation(libs.material.kolor)
+    // Miuix 风格组件库（KMP android 变体）
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.icons)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.blur)
 }

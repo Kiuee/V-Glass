@@ -54,6 +54,29 @@ object AppStoreAdapter : AppAdapter {
     private val handler = Handler(Looper.getMainLooper())
     private val extractor by lazy { TabExtractor(descriptor) }
 
+    // 事件驱动 tick 的内容重绘信号源：内容容器 onDraw（滚动/翻页每帧触发、静止不触发）
+    // + LottieAnimationView（首页刷新 Lottie 动画期间镜像图标保持跟随）
+    private val contentSignalClasses = listOf(
+        "com.bbk.appstore.widget.tabview.TouchViewPager",
+        "com.bbk.appstore.widget.recyclerview.PullRefreshRecyclerView",
+        "com.bbk.appstore.widget.CanDisableViewPager",
+        "com.bbk.appstore.widget.DetectPageSelectViewPager",
+        "com.bbk.appstore.ui.rank.RankingContainerView",
+        "com.vivo.springkit.nestedScroll.NestedScrollLayout",
+        "com.airbnb.lottie.LottieAnimationView",
+    )
+
+    /** 内容重绘信号接收端（onSessionCreated 注入，指向当前会话的 requestTick）。 */
+    @Volatile
+    private var contentInvalidatedListener: (() -> Unit)? = null
+
+    /** 成功 hook 的信号类数（0 = 无信号源，事件驱动回退每帧渲染）。 */
+    @Volatile
+    private var contentSignalHooked = 0
+
+    /** 各信号源触发计数（取证：静止时持续增长 = 信号源过触发）。 */
+    private val contentSignalCounts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     // 结构化兜底（不依赖混淆名）：标准类名 hook 全部失配时置位，
     // 装配成功后从视图树反查真实列表类再 hook（视图树异步加载，可能需要重试）
     @Volatile
@@ -124,6 +147,12 @@ object AppStoreAdapter : AppAdapter {
         hookTouchFlow(facade, loader)
         hookGestureChain(facade, loader)
         hookNavigationBarPresentation(facade, config, loader)
+        contentSignalHooked = if (config().eventDrivenTick) {
+            AppAdapter.hookContentDrawSignals(facade, loader, contentSignalClasses) { name ->
+                contentSignalCounts.merge(name, 1L, Long::plus)
+                contentInvalidatedListener?.invoke()
+            }
+        } else 0
     }
 
     override fun onTabActivityResumed(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {
@@ -139,6 +168,17 @@ object AppStoreAdapter : AppAdapter {
         glassActivityRef = WeakReference(activity)
         session.afterForward = {
             handler.post { if (!activity.isFinishing && !activity.isDestroyed) runDiagnostics(activity, facade) }
+        }
+        // 事件驱动 tick：玻璃仅在内容真正重绘时刷新（静止零重绘）；零信号源（应用更新
+        // 类名失配等）自动回退每帧渲染，玻璃不会停更
+        contentInvalidatedListener = { session.requestTick() }
+        session.tickEventDriven = config().eventDrivenTick && contentSignalHooked > 0
+        // 信号计数取证（事件驱动 tick 排查：静止页面计数持续增长 = 信号源过触发）
+        for (delay in longArrayOf(10_000, 20_000, 30_000)) {
+            handler.postDelayed({
+                val counts = contentSignalCounts.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }
+                facade.log(android.util.Log.INFO, "content signal counts: $counts")
+            }, delay)
         }
         // 取证：装配后定时 dump（覆盖 tab 切换后的视图状态）；顺路重试结构化兜底
         for (delay in longArrayOf(3_000, 8_000, 15_000, 25_000, 40_000)) {
