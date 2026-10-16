@@ -165,6 +165,19 @@ class GlassSession(
     val contentActive: Boolean
         get() = android.os.SystemClock.elapsedRealtime() < activeUntilMs
 
+    /** WHOLE_TAB 图标帧预览钩子：返回指定 tab 的"选中动画 Lottie drawable"（任意对象，
+     *  引擎反射 setProgress 驱动并临时挂载到该 tab 图标 ImageView 使帧可被镜像），取不到
+     *  返回 null。未注入（相册走 setChecked 原生路径，图标外观自带选中态）时图标帧预览
+     *  整段跳过。由适配器按应用注入（vivo 官网：底栏内部 item 状态表反射）。 */
+    @Volatile
+    var previewIconLottie: ((index: Int) -> Any?)? = null
+
+    /** 帧驱动钩子：对 [previewIconLottie] 返回的 drawable 驱动到指定进度（0=首帧，
+     *  1=末帧）。未注入时回退反射 `setProgress`（Lottie 方法未被混淆的应用，如商店）；
+     *  R8 连库方法一起混淆的应用（vivo 官网，进度真名 "L"）必须注入。 */
+    @Volatile
+    var previewIconProgress: ((lottie: Any, progress: Float) -> Unit)? = null
+
     /** 诊断日志出口（hook 层注入 facade.log）。 */
     @Volatile
     var logger: ((String) -> Unit)? = null
@@ -193,9 +206,12 @@ class GlassSession(
             logger?.invoke("performClick(index=$index) blocked main thread for ${cost}ms")
         }
         if (wholeTabPreviewOrigin >= 0) {
-            // 拖动预览提交：清除冻结，交还应用真实选中读数（视觉由应用自身 setChecked 流程接管）
+            // 拖动预览提交：清除冻结，交还应用真实选中读数（视觉由应用自身 setChecked 流程接管）。
+            // 点击的 tab 图标由应用切换流程（I() 播放/换静态图）接管，不恢复保存的原 drawable；
+            // 其余 tab 已在离开时逐一恢复，此处仅清缓存。
             wholeTabPreviewOrigin = -1
             wholeTabPreviewTarget = -1
+            savedPreviewDrawables.clear()
         }
         afterForward?.invoke()
     }
@@ -316,11 +332,20 @@ class GlassSession(
     /** 当前悬停预览目标，<0 = 无。 */
     private var wholeTabPreviewTarget = -1
     private val wholeTabSetChecked: java.lang.reflect.Method? = tabViews.firstOrNull()?.javaClass?.let { cls ->
-        runCatching { cls.getMethod("setChecked", Boolean::class.javaPrimitiveType) }.getOrNull()
+        // 方法名按描述符解析（默认 setChecked）：部分库被方法级混淆（如 vivo 官网 originui
+        // 13.3.0.1 的选中外观翻转为 y(boolean)，无 setChecked），适配器按取证声明。
+        // 解析失败保持 null（预览静默失效、不崩溃），不回退瞎猜方法名。
+        runCatching {
+            cls.getMethod(
+                extractor.descriptor.itemCheckedSetterMethodName ?: "setChecked",
+                Boolean::class.javaPrimitiveType,
+            )
+        }.getOrNull()
     }
 
-    /** WHOLE_TAB 悬停预览：上一个预览目标（或原选中）回归未选中，悬停目标预览选中；
-     *  拖回原 tab 完全还原并结束预览。 */
+    /** WHOLE_TAB 悬停预览：悬停 tab = 动画末帧（选中外观），被拖离的原选中 tab = 动画
+     *  首帧（未选中外观），其他经过后离开的 tab = 恢复原静态图标（非首帧）；拖回原 tab
+     *  完全还原并结束预览。相册经 setChecked 原生驱动同语义（见 previewIconLottie）。 */
     private fun previewWholeTab(target: Int) {
         if (target == wholeTabPreviewTarget) return
         if (wholeTabSetChecked == null) return
@@ -328,20 +353,83 @@ class GlassSession(
             ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
                 .also { wholeTabPreviewOrigin = it }
         if (target == origin) {
-            if (wholeTabPreviewTarget >= 0) setTabChecked(wholeTabPreviewTarget, false)
+            // 悬停回原 tab：预览保持激活（原 tab 维持首帧），仅清悬停目标——边界抖动
+            // 不反复挂载/恢复（那会表现为"动画被反复触发"）；还原统一在拖动结束的
+            // endTabPreview() 做（LiquidBottomTabs onDragStopped 回原 tab 时调用）
+            if (wholeTabPreviewTarget >= 0) {
+                setTabChecked(wholeTabPreviewTarget, false)
+                restorePreviewFrame(wholeTabPreviewTarget)
+                wholeTabPreviewTarget = -1
+            }
             setTabChecked(origin, true)
-            wholeTabPreviewTarget = -1
-            wholeTabPreviewOrigin = -1
             return
         }
         val previous = wholeTabPreviewTarget
         if (previous >= 0) {
+            // 离开的条目恢复原静态图标（非动画首帧）
             setTabChecked(previous, false)
+            restorePreviewFrame(previous)
         } else {
+            // 被拖离的原选中条目 = 动画首帧（未选中外观）
             setTabChecked(origin, false)
+            showPreviewFrame(origin, 0f)
         }
         setTabChecked(target, true)
+        showPreviewFrame(target, 1f)
         wholeTabPreviewTarget = target
+    }
+
+    /** 帧预览期间被临时换上 Lottie 的 tab 下标 → 原图标 drawable（离开即恢复）。 */
+    private val savedPreviewDrawables = android.util.SparseArray<android.graphics.drawable.Drawable>()
+
+    private fun previewIconView(index: Int): android.widget.ImageView? {
+        val tabView = tabViews.getOrNull(index) ?: return null
+        val iconIdName = extractor.descriptor.elementIds["icon"] ?: return null
+        val iconId = tabView.context.resources.getIdentifier(iconIdName, "id", tabView.context.packageName)
+        if (iconId == 0) return null
+        return tabView.findViewById<View>(iconId) as? android.widget.ImageView
+    }
+
+    /** WHOLE_TAB 图标帧预览：把适配器钩子提供的 Lottie drawable 临时挂到该 tab 图标
+     *  ImageView 上并驱动到指定帧（未选中条目视图上挂的是静态图，不挂载帧变化无法被
+     *  镜像）。挂载前保存原 drawable 供离开时恢复。钩子未注入或取不到 drawable（应用
+     *  更新致反射失效）时静默跳过。 */
+    private fun showPreviewFrame(index: Int, progress: Float) {
+        val lottie = previewIconLottie?.invoke(index) ?: return
+        val iconView = previewIconView(index) ?: return
+        if (iconView.drawable !== lottie) {
+            savedPreviewDrawables.put(index, iconView.drawable)
+            iconView.setImageDrawable(lottie as android.graphics.drawable.Drawable)
+        }
+        val drive = previewIconProgress
+        if (drive != null) drive(lottie, progress) else setLottieProgress(lottie, progress)
+    }
+
+    /** 恢复该 tab 的原静态图标（预览离开/拖回时调用；无保存记录则跳过）。 */
+    private fun restorePreviewFrame(index: Int) {
+        val saved = savedPreviewDrawables.get(index, null) ?: return
+        previewIconView(index)?.let { iconView ->
+            if (iconView.drawable !== saved) iconView.setImageDrawable(saved)
+        }
+        savedPreviewDrawables.remove(index)
+    }
+
+    /** 拖动结束（LiquidBottomTabs onDragStopped 回到原选中 tab 时调用）：全部条目恢复
+     *  原静态图标、原 tab 回选中态，预览状态清零。幂等。 */
+    fun endTabPreview() {
+        val origin = wholeTabPreviewOrigin.takeIf { it >= 0 }
+            ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
+        for (i in 0 until savedPreviewDrawables.size()) {
+            val index = savedPreviewDrawables.keyAt(i)
+            previewIconView(index)?.let { iconView ->
+                val saved = savedPreviewDrawables.valueAt(i)
+                if (iconView.drawable !== saved) iconView.setImageDrawable(saved)
+            }
+        }
+        savedPreviewDrawables.clear()
+        setTabChecked(origin, true)
+        wholeTabPreviewOrigin = -1
+        wholeTabPreviewTarget = -1
     }
 
     /** 翻转 WHOLE_TAB 条目的 checked 态：VNavMenuItem.setChecked 驱动图标选中外观与标签
@@ -353,7 +441,7 @@ class GlassSession(
             .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }
     }
 
-    private fun setLottieProgress(lottie: View, progress: Float) {
+    private fun setLottieProgress(lottie: Any, progress: Float) {
         runCatching {
             lottie.javaClass.getMethod("setProgress", Float::class.javaPrimitiveType)
                 .invoke(lottie, progress)

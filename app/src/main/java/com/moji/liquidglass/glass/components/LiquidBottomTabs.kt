@@ -82,6 +82,9 @@ fun LiquidBottomTabs(
     accentColor: Color? = null,
     onPreviewTabChanged: ((Int) -> Unit)? = null,
     onSelectedTabTapped: ((Int) -> Unit)? = null,
+    /** 拖动结束且气泡停在原选中 tab（索引未变）时回调：宿主据此还原悬停预览
+     *  （恢复各 tab 原图标/选中态）。始终先于 onSelectedTabTapped 调用。 */
+    onPreviewEnded: (() -> Unit)? = null,
     tintRefractionContent: Boolean = true,
     content: @Composable RowScope.() -> Unit,
     overlayContent: (@Composable RowScope.() -> Unit)? = null
@@ -137,6 +140,11 @@ fun LiquidBottomTabs(
                 },
                 onDragStopped = {
                     val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
+                    // 气泡停在原选中 tab：先收敛预览（恢复原图标/选中态），再视手势转发
+                    // 原地点击（应用自身行为，如回顶+刷新/重播选中动画）
+                    if (targetIndex == currentIndex) {
+                        onPreviewEnded?.invoke()
+                    }
                     // 原地点击已选中 tab：索引未变时 snapshotFlow 不发射，需显式回调
                     // （宿主转发 performClick → 应用"再点一次已选中 tab"行为，如回顶+刷新）
                     if (targetIndex == currentIndex && !dragMoved.value) {
@@ -195,6 +203,16 @@ fun LiquidBottomTabs(
             )
         }
 
+        // 拖动悬停预览下标：targetValue ≠ currentIndex 时为悬停 tab，松手 settle / 拖回原
+        // tab 自动归 -1——与宿主 previewWholeTab/previewTabChange 同一语义来源，内容层
+        // （标签强调色等）据此绘制悬停反馈
+        val previewIndex = remember {
+            derivedStateOf {
+                val target = dampedDragAnimation.targetValue.fastRoundToInt()
+                if (target != currentIndex) target else -1
+            }
+        }
+        CompositionLocalProvider(LocalTabPreviewIndex provides previewIndex) {
         Row(
             Modifier
                 .graphicsLayer {
@@ -352,6 +370,7 @@ fun LiquidBottomTabs(
                     content = overlay
                 )
             }
+        }
         }
     }
 }

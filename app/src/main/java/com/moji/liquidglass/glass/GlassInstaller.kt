@@ -90,7 +90,10 @@ object GlassInstaller {
         }
 
         // 覆盖层：内容视图原位不动，ComposeView 叠加在其上、只占底栏条带高度。
-        // 关闭裁切：玻璃辉光/液泡放大可溢出条带边界，不再出现裁切边线
+        // 关闭裁切：玻璃辉光/液泡放大可溢出条带边界，不再出现裁切边线。
+        // **overlay 必须挂在 content 层（appRoot 之外）**：backdrop 会跨分支 view.draw
+        // 采样 appRoot——overlay 一旦进入 appRoot 子树，采样路径重入绘制
+        // （RenderNode "Recording currently in progress" 主线程闪退，vivo 官网踩坑）。
         composeView.clipChildren = false
         composeView.clipToPadding = false
         content.addView(

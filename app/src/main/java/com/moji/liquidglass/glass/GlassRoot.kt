@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
+import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
 import com.moji.liquidglass.glass.components.LiquidBottomTabs
 import kotlinx.coroutines.flow.collectLatest
@@ -324,10 +325,29 @@ fun GlassRoot(
                         session.onTabClicked(it)
                         session.requestTick()
                     },
-                    // 两模式统一：液泡折射副本整层强调色 tint——选中/悬停 tab 在液泡内呈强调色，
-                    // 强调色来自适配器提取的应用配色（缺省回退 iOS 蓝），观感全局一致
-                    tintRefractionContent = true,
+                    // 拖动结束停在原选中 tab：还原悬停预览（各 tab 原图标/选中态）
+                    onPreviewEnded = {
+                        session.endTabPreview()
+                        session.requestTick()
+                    },
+                    // 液泡折射副本整层强调色 tint：选中/悬停 tab 在液泡内呈强调色，观感全局一致；
+                    // 描述符可关（vivo 官网等"白=底色"编码素材必须关，否则白间隙被染成强调色实心）
+                    tintRefractionContent = session.extractor.descriptor.tintRefractionContent,
                     content = {
+                        // 标签强调色：选中 tab 与拖动悬停预览 tab 用应用强调色，其余内容色。
+                        // 旧版该反馈由折射副本整层染色承担；tintRefractionContent=false 的
+                        // 应用（vivo 官网，"白=底色"素材）改由此通道承担（染色开启的应用
+                        // 液泡内仍由染色主导，视觉不变）。
+                        // 预览激活时 selectedIndex 冻结为原 tab（防读数污染），故仅悬停
+                        // tab 吃强调色、原 tab 回内容色（即"原 tab 变回未选中"的视觉）。
+                        val previewIndex = LocalTabPreviewIndex.current.value
+                        val accentColor = specColors.second ?: contentColor
+                        fun labelColor(index: Int) =
+                            if (index == previewIndex || (previewIndex == -1 && index == selectedIndex)) {
+                                accentColor
+                            } else {
+                                contentColor
+                            }
                         spec.tabs.forEachIndexed { index, tab ->
                             LiquidBottomTab(onClick = {
                                 selectedIndex = index
@@ -352,7 +372,7 @@ fun GlassRoot(
                                     if (style.showLabels) {
                                         BasicText(
                                             tab.title,
-                                            style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold)
+                                            style = TextStyle(labelColor(index), 12.sp, fontWeight = FontWeight.Bold)
                                         )
                                     }
                                 } else {
@@ -378,7 +398,7 @@ fun GlassRoot(
                                     if (style.showLabels) {
                                         BasicText(
                                             labelTexts[index] ?: tab.title,
-                                            style = TextStyle(contentColor, 12.sp, fontWeight = FontWeight.Bold)
+                                            style = TextStyle(labelColor(index), 12.sp, fontWeight = FontWeight.Bold)
                                         )
                                     }
                                 }

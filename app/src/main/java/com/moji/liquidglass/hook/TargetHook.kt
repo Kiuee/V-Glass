@@ -13,6 +13,7 @@ import com.moji.liquidglass.glass.GlassSession
 import com.moji.liquidglass.glass.GlassStyle
 import com.moji.liquidglass.hook.adapters.AppAdapter
 import com.moji.liquidglass.hook.adapters.AdapterRegistry
+import java.lang.reflect.Executable
 import java.util.WeakHashMap
 
 /**
@@ -71,8 +72,54 @@ object TargetHook {
             (call.thisObj as? Activity)?.let { GlassInstaller.dispatchPause(it) }
             null
         }
-        adapter.installAppHooks(facade, config, appClassLoader)
-        facade.log(android.util.Log.INFO, "hook installed for ${adapter.targetPackage} (${adapter.displayName})")
+        // 总开关 + 按应用开关 = LSPosed 作用域语义：任一关闭 → 不安装任何应用 hook
+        // （installAppHooks 装的是进程级全局方法 hook，与 Activity 生命周期无关，不能等
+        // resume 才还原）。运行时切换由 ConfigCheckedFacade 在回调层惰性直通兜底。
+        val hooksActive = config().enabled && config().appEnabledFor(hostPackage)
+        adapter.installAppHooks(
+            ConfigCheckedFacade(facade, config, hostPackage),
+            config,
+            appClassLoader,
+        )
+        facade.log(
+            android.util.Log.INFO,
+            "hook installed for ${adapter.targetPackage} (${adapter.displayName}), hooksActive=$hooksActive",
+        )
+    }
+
+    /**
+     * installAppHooks 专用 facade 装饰器：总开关或按应用开关关闭时，所有 hook 回调
+     * 惰性直通（before→null 放行、int 变换→原值、swallow→不拦截）——hook 仍在但零
+     * 作用，重新打开自动恢复。运行时切换（安装后关开关）的兜底，语义对齐 LSPosed
+     * 作用域勾选。
+     */
+    private class ConfigCheckedFacade(
+        private val inner: HookFacade,
+        private val config: () -> ModuleConfig,
+        private val hostPackage: String,
+    ) : HookFacade by inner {
+        private fun active(): Boolean =
+            config().enabled && config().appEnabledFor(hostPackage)
+
+        override fun around(
+            m: Executable,
+            before: ((HookCall) -> Any?)?,
+            after: ((HookCall) -> Any?)?,
+        ) {
+            inner.around(
+                m,
+                before?.let { cb -> { call: HookCall -> if (active()) cb(call) else null } },
+                after?.let { cb -> { call: HookCall -> if (active()) cb(call) else null } },
+            )
+        }
+
+        override fun mapIntArg(m: Executable, index: Int, transform: (Int) -> Int) {
+            inner.mapIntArg(m, index) { original -> if (active()) transform(original) else original }
+        }
+
+        override fun swallowArgIf(m: Executable, index: Int, gate: (Any?) -> Boolean) {
+            inner.swallowArgIf(m, index) { arg -> active() && gate(arg) }
+        }
     }
 
     /** 远程配置读取加 500ms TTL（内容延伸 hook 是列表布局的高频调用点）。 */

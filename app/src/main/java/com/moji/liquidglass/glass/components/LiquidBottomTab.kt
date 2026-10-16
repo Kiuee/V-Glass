@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +23,14 @@ import com.kyant.shapes.Capsule
  */
 internal val LocalLiquidBottomTabScale =
     staticCompositionLocalOf { { 1f } }
+
+/**
+ * 拖动液泡悬停预览的 tab 下标（-1 = 无预览）。由 LiquidBottomTabs 提供（拖动中
+ * targetValue ≠ currentIndex 时为悬停下标），内容层据此绘制悬停反馈（如标签强调色）
+ * ——与宿主 previewWholeTab/previewTabChange 同一语义来源，替代旧"折射副本整层
+ * 染色"承担的悬停高亮（vivo 官网等关闭染色的应用依赖此通道）。
+ */
+val LocalTabPreviewIndex = staticCompositionLocalOf<State<Int>> { mutableIntStateOf(-1) }
 
 @Composable
 fun RowScope.LiquidBottomTab(

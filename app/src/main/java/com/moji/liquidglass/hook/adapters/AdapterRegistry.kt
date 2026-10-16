@@ -8,7 +8,7 @@ import android.app.Activity
  */
 object AdapterRegistry {
 
-    private val adapters: List<AppAdapter> = listOf(AppStoreAdapter, GalleryAdapter)
+    private val adapters: List<AppAdapter> = listOf(AppStoreAdapter, GalleryAdapter, VivoSpaceAdapter)
 
     val all: List<AppAdapter> get() = adapters
 

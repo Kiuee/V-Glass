@@ -36,6 +36,16 @@ data class TabBarDescriptor(
     /** WHOLE_TAB 元素级镜像：元素名 → 资源 id 名。只镜像这些子元素（排除 M3 选中胶囊
      *  指示器与条目背景，观感对齐商店）；全部解析失败时回退整视图镜像。空 = 整视图镜像。 */
     val elementIds: Map<String, String> = emptyMap(),
+    /** WHOLE_TAB 条目"选中外观翻转"方法名（默认 "setChecked"，相册 VNavMenuItem 路径）。
+     *  拖动悬停预览靠它翻转条目选中态；部分库被方法级混淆（如 vivo 官网 originui
+     *  13.3.0.1 为 "y"，无 setChecked），按取证在适配器声明。应用更新后改名 = 预览
+     *  静默失效（不崩溃，回退为无预览）。 */
+    val itemCheckedSetterMethodName: String? = null,
+    /** 液泡折射副本是否整层强调色染色（默认 true：选中/悬停 tab 在液泡内呈强调色）。
+     *  图标素材含"白=底色"编码的应用（如 vivo 官网）必须关闭：染色会把不透明白间隙
+     *  一起染成强调色，图标在液泡内呈实心，且动画结束切到真透明间隙的静态图时产生
+     *  "染色实心 → 镂空"闪现。关闭后液泡折射未染色副本 = 原样图标。 */
+    val tintRefractionContent: Boolean = true,
 )
 
 /**
