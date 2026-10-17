@@ -461,9 +461,16 @@ class GlassSession(
     }
 
     /** 翻转 WHOLE_TAB 条目的 checked 态：VNavMenuItem.setChecked 驱动图标选中外观与标签
-     *  显隐（内部调 setSelected），与应用自身切页同路径，无监听器副作用。best-effort。 */
+     *  显隐（内部调 setSelected），与应用自身切页同路径，无监听器副作用。best-effort。
+     *  描述符声明了 itemCheckedApplier 时（条目选中外观由"数据模型 + setData 重渲染"
+     *  驱动、视图上无 void(boolean) 翻转方法，如高德地图）走直控通道。 */
     private fun setTabChecked(index: Int, checked: Boolean) {
         val view = tabViews.getOrNull(index) ?: return
+        extractor.descriptor.itemCheckedApplier?.let { applier ->
+            runCatching { applier(view, checked) }
+                .onFailure { logger?.invoke("itemCheckedApplier($index,$checked) failed: $it") }
+            return
+        }
         val method = wholeTabSetChecked ?: return
         runCatching { method.invoke(view, checked) }
             .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }

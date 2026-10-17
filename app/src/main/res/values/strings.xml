@@ -36,6 +36,7 @@
     <string name="app_disabled_by_master">总开关已关闭</string>
     <string name="app_note_store">双 Lottie 图标与二楼下拉跟随适配</string>
     <string name="app_note_gallery">GL 内容页采样与多选模式自动隐藏</string>
+    <string name="app_note_amap">悬浮胶囊底栏整条目镜像适配</string>
     <string name="apps_note">关闭应用开关后重启对应应用还原</string>
 
     <!-- 设置页 -->

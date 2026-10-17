@@ -7,5 +7,6 @@
         <item>com.vivo.gallery</item>
         <item>com.vivo.space</item>
         <item>com.sina.weibo</item>
+        <item>com.autonavi.minimap</item>
     </string-array>
 </resources>

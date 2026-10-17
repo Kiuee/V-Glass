@@ -47,6 +47,13 @@ data class TabBarDescriptor(
      *  13.3.0.1 为 "y"，无 setChecked），按取证在适配器声明。应用更新后改名 = 预览
      *  静默失效（不崩溃，回退为无预览）。 */
     val itemCheckedSetterMethodName: String? = null,
+    /** WHOLE_TAB 条目"选中外观翻转"的直控通道（非 null 时优先于 [itemCheckedSetterMethodName]
+     *  反射解析）。条目选中外观由"数据模型 + setData 重渲染"驱动、视图上不存在
+     *  void(boolean) 翻转方法的应用（如高德地图 C3TabItemView：选中态在 or0.b 字段，
+     *  翻转 = 改模型 + 反射调 setData）在适配器提供此闭包，参数 (条目视图, 目标选中态)。
+     *  要求与反射路径同语义：纯视觉翻转、无切页等副作用（副作用应用见
+     *  GlassSession.isTabPreviewActive 吞咽机制）。 */
+    val itemCheckedApplier: ((view: View, checked: Boolean) -> Unit)? = null,
     /** 液泡折射副本是否整层强调色染色（默认 true：选中/悬停 tab 在液泡内呈强调色）。
      *  图标素材含"白=底色"编码的应用（如 vivo 官网）必须关闭：染色会把不透明白间隙
      *  一起染成强调色，图标在液泡内呈实心，且动画结束切到真透明间隙的静态图时产生
@@ -151,8 +158,11 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
         )
     }
 
-    /** 标签组内第一个文本视图（VMenuTextView 小/大标签，配色选择器一致）。 */
+    /** 标签组内第一个文本视图（VMenuTextView 小/大标签，配色选择器一致）。
+     *  labels 元素自身是 TextView 时直接返回（高德地图 c3_tab_bar_item_name 等
+     *  "标签即单 TextView 无分组"的条目布局）。 */
     private fun firstTextView(labels: View?): TextView? {
+        if (labels is TextView) return labels
         val group = labels as? ViewGroup ?: return null
         for (i in 0 until group.childCount) {
             val child = group.getChildAt(i)
@@ -194,8 +204,12 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
         return null to null
     }
 
-    /** 标签组内可见的文本视图文本（小/大标签按选中态显隐）。 */
+    /** 标签组内可见的文本视图文本（小/大标签按选中态显隐）；labels 元素自身是
+     *  TextView 时直接取其文本。 */
     private fun visibleLabelText(labelsElement: View): String? {
+        if (labelsElement is TextView) {
+            return labelsElement.text?.toString()?.takeIf { it.isNotBlank() }
+        }
         if (labelsElement !is ViewGroup) return null
         for (i in 0 until labelsElement.childCount) {
             val child = labelsElement.getChildAt(i)
