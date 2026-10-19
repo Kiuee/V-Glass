@@ -696,6 +696,10 @@ object VivoSpaceAdapter : AppAdapter {
     ) {
         appContextRef = WeakReference(activity)
         tabBarRef = WeakReference(session.tabContainer)
+        // 背景采样去重（v2.2，与小红书/高德/相册对齐，模块配置 lightweightSampling 可
+        // 远程关）：三个玻璃节点每帧各自对 appRoot 全树 draw → 1× RenderNode 录制 +
+        // 三节点回放（信息流/资讯页重内容滚动卡顿主源）。
+        session.dedupeBackdropSampling = config().lightweightSampling
         // 冷启动全屏弹窗（popup_container）pending：overlay 挂载即隐藏,弹窗关闭后出现
         // （判定与同步逻辑见 syncGlassOverlayWithPopup,监视器每拍持续驱动）
         splashPending = true

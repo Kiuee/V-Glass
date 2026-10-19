@@ -22,9 +22,10 @@ import java.lang.ref.WeakReference
  * - 底栏：home_page_root_view 的 #tab_container（FrameLayout，alignParentBottom）
  *   内 @android:id/tabs（TabWidget），tab 视图为 com.bbk.appstore.ui.tab.TabView
  *   （双 Lottie：lottie_view 主图标 / lottie_view_refresh 刷新，LOTTIE_RESOLVE 镜像）。
- * - 内容延伸（信息流沉浸）：全部 tab 页列表的底栏高度留白取自混淆方法 g9.h.j()
- *   （= 66dp + 导航栏 inset），精准方案是改写分发入口 ca.h.G0(int)（j() 保持真实值，
- *   下拉刷新状态机不受影响）；类名失配时逐级降级到结构化兜底（RecyclerView.setPadding）。
+ * - 内容延伸（信息流沉浸）：全部 tab 页列表的底栏高度留白取自混淆方法 ya.h.j()
+ *   （= 66dp + 导航栏 inset；10.3.60.0 为 g9.h.j()，混淆包名随版本漂移），
+ *   精准方案是改写分发入口 zb.h.K0(int)（10.3.60.0 为 ca.h.G0(int)；j() 保持真实值，
+ *   下拉刷新状态机不受影响）；类名失配时降级到结构化兜底（View.setPadding 收口）。
  * - 可见性修补：导航栏透明（小白条区域呈现），见 applyTransparentNavigationBar。
  */
 object AppStoreAdapter : AppAdapter {
@@ -77,13 +78,8 @@ object AppStoreAdapter : AppAdapter {
     /** 各信号源触发计数（取证：静止时持续增长 = 信号源过触发）。 */
     private val contentSignalCounts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    // 结构化兜底（不依赖混淆名）：标准类名 hook 全部失配时置位，
-    // 装配成功后从视图树反查真实列表类再 hook（视图树异步加载，可能需要重试）
-    @Volatile
-    private var structuralViewTreeProbeNeeded = false
-
-    @Volatile
-    private var structuralHookDone = false
+    // 结构化兜底现直接 hook 平台 View.setPadding（见 hookListPaddingStructural v2 注释），
+    // 安装不再有条件分支，无需装配后的视图树反查重试。
 
     /** 当前装配了玻璃栏的 Activity（h0 回调触发取证时定位目标）。 */
     @Volatile
@@ -124,20 +120,16 @@ object AppStoreAdapter : AppAdapter {
             ModuleConfig.CONTENT_EXTEND_SOURCE -> {
                 // 直接 hook j() 清零留白——注意：会破坏下拉刷新状态机（竖向滑动失灵的根因）
                 if (!hookBottomBarPadding(facade, config, loader)) {
-                    // 商店自更新后混淆名 g9.h 失配时留白清零彻底失效（信息流停在小白条上方），
-                    // 自动接入不依赖混淆名的结构化兜底
-                    if (!hookListPaddingStructural(facade, config, loader)) {
-                        structuralViewTreeProbeNeeded = true
-                    }
+                    // 商店自更新后混淆名 ya.h 失配时留白清零彻底失效（信息流停在小白条上方），
+                    // 自动接入不依赖混淆名的平台级收口兜底
+                    hookListPaddingStructural(facade, config, loader)
                 }
             }
 
             ModuleConfig.CONTENT_EXTEND_APPLIER -> {
                 // 精准方案：j() 保持真实值（下拉刷新的拉距/阈值计算不受影响），改写最终落地留白
                 if (!hookBottomBarPaddingApplier(facade, loader)) {
-                    if (!hookListPaddingStructural(facade, config, loader)) {
-                        structuralViewTreeProbeNeeded = true
-                    }
+                    hookListPaddingStructural(facade, config, loader)
                 }
             }
 
@@ -180,13 +172,10 @@ object AppStoreAdapter : AppAdapter {
                 facade.log(android.util.Log.INFO, "content signal counts: $counts")
             }, delay)
         }
-        // 取证：装配后定时 dump（覆盖 tab 切换后的视图状态）；顺路重试结构化兜底
+        // 取证：装配后定时 dump（覆盖 tab 切换后的视图状态）
         for (delay in longArrayOf(3_000, 8_000, 15_000, 25_000, 40_000)) {
             handler.postDelayed({
                 if (!activity.isFinishing && !activity.isDestroyed) {
-                    if (structuralViewTreeProbeNeeded && !structuralHookDone) {
-                        applyStructuralFallbackFromViewTree(activity, facade, config)
-                    }
                     runDiagnostics(activity, facade)
                 }
             }, delay)
@@ -231,21 +220,22 @@ object AppStoreAdapter : AppAdapter {
 
     /**
      * 内容延伸的精准方案：j() 保持真实值（下拉刷新的拉距/阈值计算不受影响），
-     * 只改写把留白值落地为 padding/margin 的分发入口 `ca.h.G0(int)`
-     * （首页所有子页留白都从这一个方法分发到 a2/Q/v/t）。类名 ca.h 为混淆名，
-     * 仅对本 APK 版本有效，查找失败自动降级。
+     * 只改写把留白值落地为 padding/margin 的分发入口 `zb.h.K0(int)`
+     * （首页所有子页留白都从这一个方法分发：委托 `A.Z1(i10)` + 遍历监听器 `t(i10)`；
+     * 10.3.60.0 为 ca.h.G0(int)，RecommendFragment.notifyNavigationbarChange 经它分发）。
+     * 类名 zb.h 为混淆名，仅对本 APK 版本有效，查找失败自动降级。
      */
     private fun hookBottomBarPaddingApplier(facade: HookFacade, loader: ClassLoader): Boolean {
         return try {
-            val g0 = Class.forName("ca.h", true, loader)
-                .getDeclaredMethod("G0", Int::class.javaPrimitiveType)
-            facade.mapIntArg(g0, 0) { 0 }
-            facade.log(android.util.Log.INFO, "hooked ca.h.G0(int): bottom padding applier zeroed (j() intact)")
+            val k0 = Class.forName("zb.h", true, loader)
+                .getDeclaredMethod("K0", Int::class.javaPrimitiveType)
+            facade.mapIntArg(k0, 0) { 0 }
+            facade.log(android.util.Log.INFO, "hooked zb.h.K0(int): bottom padding applier zeroed (j() intact)")
             true
         } catch (t: Throwable) {
             facade.log(
                 android.util.Log.WARN,
-                "hook ca.h.G0 failed (store updated?), falling back to structural list padding hook",
+                "hook zb.h.K0 failed (store updated?), falling back to structural list padding hook",
                 t,
             )
             false
@@ -254,20 +244,21 @@ object AppStoreAdapter : AppAdapter {
 
     /**
      * 列表底部留白清零（让内容延伸到玻璃栏与小白条下方）：
-     * 应用商店所有 tab 页列表的底栏高度留白统一取自静态方法 g9.h.j()（= 66dp + 导航栏 inset），
-     * 首页信息流/分类/排行/管理页/二级子页/Flutter BOTTOM_OVERLAY_HEIGHT 全部经过它。
+     * 应用商店所有 tab 页列表的底栏高度留白统一取自静态方法 ya.h.j()（= 66dp + 导航栏 inset），
+     * 首页信息流/分类/排行/管理页/二级子页/Flutter 桥全部经过它
+     * （10.3.60.0 为 g9.h.j()——混淆包名随版本漂移、方法名 j/k 未变）。
      * 模块启用时返回 0，停用时走原方法（原底栏需要留白）。类名为混淆名，仅对本 APK 版本有效。
      */
     private fun hookBottomBarPadding(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader): Boolean {
         return try {
-            val j = Class.forName("g9.h", true, loader).getDeclaredMethod("j")
+            val j = Class.forName("ya.h", true, loader).getDeclaredMethod("j")
             facade.around(j, { if (config().enabled) 0 else null }, null)
-            facade.log(android.util.Log.INFO, "hooked g9.h.j(): list bottom padding zeroed while enabled")
+            facade.log(android.util.Log.INFO, "hooked ya.h.j(): list bottom padding zeroed while enabled")
             true
         } catch (t: Throwable) {
             facade.log(
                 android.util.Log.WARN,
-                "hook g9.h.j() failed (store updated?), falling back to structural list padding hook",
+                "hook ya.h.j() failed (store updated?), falling back to structural list padding hook",
                 t,
             )
             false
@@ -275,93 +266,85 @@ object AppStoreAdapter : AppAdapter {
     }
 
     /**
-     * 内容延伸的结构化兜底：不依赖混淆类名，hook 应用自带 RecyclerView 基类的
-     * setPadding(int,int,int,int)，把底栏留白的最终落地值清 0（语义同 applier 方案，
-     * 不碰留白计算状态机）。jadx 结论：商店列表底部留白唯一来源就是底栏高度，
-     * 进程内所有 RecyclerView 的底 padding 都是该留白，清 0 无副作用；停用时放行原值。
-     * 标准类名都解析不到（改名/换库）时返回 false，交给视图树反查兜底。
+     * 内容延伸的结构化兜底（不依赖混淆类名）：平台级 `View.setPadding` 收口——
+     * 底 padding ≥ 底栏高度（留白 = 底栏高度 + 导航栏 inset，必然 ≥ 底栏高度）实时归 0，
+     * 停用时放行原值。语义对齐 vivo 官网 ⑤ 收口（手册 §4.2）。
+     *
+     * v2 重写（10.4.81.0 升版时实证）：旧实现 hook RecyclerView.setPadding + 视图树反查
+     * 列表自有类——但 `setPadding` 声明在 View 上，RecyclerView 与商店全部列表类均未重写
+     * （jadx 全树 0 处 override），`getDeclaredMethod` 必然 NoSuchMethod：整条降级链
+     * 自始是死代码，混淆锚点一失配内容延伸就整体失效（本次升版暴露的根因）。
+     * View 为平台必在类，本兜底实际总会安装成功。
      */
     private fun hookListPaddingStructural(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader): Boolean {
-        for (name in listOf(
-            "androidx.recyclerview.widget.RecyclerView",
-            "android.support.v7.widget.RecyclerView",
-        )) {
-            val setPadding = runCatching {
-                Class.forName(name, true, loader).getDeclaredMethod(
-                    "setPadding",
-                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                )
-            }.getOrNull() ?: continue
-            facade.mapIntArg(setPadding, 3) { original -> if (config().enabled) 0 else original }
-            structuralHookDone = true
-            facade.log(
-                android.util.Log.INFO,
-                "structural fallback: hooked $name.setPadding, list bottom padding zeroed while enabled",
+        val setPadding = runCatching {
+            View::class.java.getDeclaredMethod(
+                "setPadding",
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
             )
-            return true
+        }.getOrNull()
+        if (setPadding == null) {
+            facade.log(android.util.Log.WARN, "structural fallback: View.setPadding not resolvable (unexpected)")
+            return false
         }
-        facade.log(android.util.Log.WARN, "structural fallback: RecyclerView not resolvable by name, will probe from view tree after install")
-        return false
-    }
-
-    /**
-     * 视图树反查兜底（标准类名全部失配时的最终手段）：从视图树取一个真实列表实例，
-     * 沿父类链 hook 所有声明 setPadding(int,int,int,int) 的列表自有类（覆盖子类重写；
-     * 到 ViewGroup 为止，绝不触碰 View 基类，否则进程内所有视图的底 padding 都会被清），
-     * 并把现存列表已落地的底 padding 主动清 0（hook 只能拦截之后的调用）。
-     * 视图树异步加载，找不到列表时不置完成标记，由装配后的定时任务重试。
-     */
-    private fun applyStructuralFallbackFromViewTree(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {
-        val content = activity.findViewById<FrameLayout>(android.R.id.content) ?: return
-        val queue = ArrayDeque<View>()
-        queue.add(content)
-        var firstList: View? = null
-        while (queue.isNotEmpty() && firstList == null) {
-            val v = queue.removeFirst()
-            if (v.javaClass.name.contains("RecyclerView")) firstList = v
-            if (v is ViewGroup) for (i in 0 until v.childCount) v.getChildAt(i)?.let { queue.add(it) }
+        var hits = 0
+        facade.mapIntArg(setPadding, 3) { original ->
+            if (config().enabled) {
+                val threshold = reserveThresholdPx(facade, loader)
+                if (threshold > 0 && original >= threshold) {
+                    if (++hits == 1) {
+                        facade.log(
+                            android.util.Log.INFO,
+                            "structural sink: first reserve padding zeroed (pb=$original, threshold=$threshold)",
+                        )
+                    }
+                    0
+                } else original
+            } else original
         }
-        val list = firstList ?: run {
-            facade.log(android.util.Log.INFO, "structural fallback: no RecyclerView in view tree yet, will retry")
-            return
-        }
-        var hooked = 0
-        var c: Class<*>? = list.javaClass
-        while (c != null && c != ViewGroup::class.java) {
-            val setPadding = runCatching {
-                c.getDeclaredMethod(
-                    "setPadding",
-                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                    Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                )
-            }.getOrNull()
-            if (setPadding != null) {
-                facade.mapIntArg(setPadding, 3) { original -> if (config().enabled) 0 else original }
-                hooked++
-            }
-            c = c.superclass
-        }
-        if (hooked == 0) {
-            facade.log(android.util.Log.WARN, "structural fallback: no setPadding declared in ${list.javaClass.name} hierarchy")
-            return
-        }
-        structuralHookDone = true
-        var swept = 0
-        fun sweep(v: View?) {
-            if (v == null) return
-            if (v.paddingBottom > 0 && v.javaClass.name.contains("RecyclerView") && config().enabled) {
-                v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, 0)
-                swept++
-            }
-            if (v is ViewGroup) for (i in 0 until v.childCount) sweep(v.getChildAt(i))
-        }
-        sweep(content)
         facade.log(
             android.util.Log.INFO,
-            "structural fallback (view tree): hooked setPadding on $hooked list classes, swept $swept existing lists",
+            "structural fallback: hooked View.setPadding, bottom >= tab bar height -> 0 while enabled",
         )
+        return true
     }
+
+    /** 收口阈值 = 底栏高度（R.dimen.main_tab_height）：留白级 padding 判定线。
+     *  回调内惰性解析（R$dimen 字段反射 + Application Resources，任意线程可用），
+     *  成功缓存；失败返回 0 = 放行原值（WARN 一次，不阻塞收口安装）。 */
+    @Volatile
+    private var reserveThresholdPxCache = 0
+
+    @Volatile
+    private var reserveThresholdWarned = false
+
+    private fun reserveThresholdPx(facade: HookFacade, loader: ClassLoader): Int {
+        reserveThresholdPxCache.takeIf { it > 0 }?.let { return it }
+        val id = runCatching {
+            Class.forName("com.bbk.appstore.R\$dimen", true, loader)
+                .getField("main_tab_height").getInt(null)
+        }.getOrDefault(0)
+        val px = if (id == 0) 0 else runCatching {
+            currentApplication()?.resources?.getDimensionPixelOffset(id) ?: 0
+        }.getOrDefault(0)
+        if (px > 0) {
+            reserveThresholdPxCache = px
+        } else if (!reserveThresholdWarned) {
+            reserveThresholdWarned = true
+            facade.log(
+                android.util.Log.WARN,
+                "structural sink: R.dimen.main_tab_height resolve failed, padding passthrough",
+            )
+        }
+        return px
+    }
+
+    private fun currentApplication(): android.app.Application? =
+        runCatching {
+            Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null)
+                as? android.app.Application
+        }.getOrNull()
 
     /**
      * 小白条区域呈现（信息流在小白条区域透出的根本保障）：
@@ -515,7 +498,7 @@ object AppStoreAdapter : AppAdapter {
 
     /**
      * 滑动失灵/小白条取证套件（一次输出三份）：
-     * 1. padding dump — 带底部 padding 的 RecyclerView（g9.h.j() 清零后应全部为 0）
+     * 1. padding dump — 带底部 padding 的 RecyclerView（ya.h.j() 清零后应全部为 0）
      * 2. bounds dump — 沿"底边最低的可见子视图"链向下：内容若到不了屏幕底，
      *    链上第一个 bottom < 屏幕高的视图就是元凶（padding/margin/高度/裁剪）
      * 3. overlay scan — 所有可见的全屏视图按 z 序输出：滑动失灵若由"透明不可滚动层"

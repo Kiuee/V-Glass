@@ -5,3 +5,12 @@
 
 # libxposed service 库（已打包）：内部经 binder 反射通信，保守保留（体积很小）
 -keep class io.github.libxposed.** { *; }
+
+# 宿主进程根包类名碰撞防护（2026-10-17 小红书 9.50.0 闪退根因）：
+# R8 默认把收缩后的类重打包到根包（a/he/pg0 这类单字母短名），模块 dex 注入宿主后经
+# 共享类加载空间解析，目标应用自己也做根包混淆时宿主同名类抢先命中——模块内
+# kotlinx.coroutines.flow.internal.AbortFlowException（改名 a，Throwable）被 ART 校验器
+# 解析成宿主的非 Throwable 根包 a，catch 校验失败 → VerifyError → 玻璃 overlay 的
+# recomposer 协程死亡 → 宿主闪退（微博/高德混淆类保留包结构所以未触发）。
+# 统一重打包到模块专属包名空间：宿主不可能存在 com.moji.liquidglass.shadow.* 同名类。
+-repackageclasses 'com.moji.liquidglass.shadow'

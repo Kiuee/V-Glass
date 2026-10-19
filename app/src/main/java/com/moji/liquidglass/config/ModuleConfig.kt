@@ -11,7 +11,9 @@ data class ModuleConfig(
     val enabled: Boolean = true,
     /** 内容延伸策略：
      *  off     — 不干预列表留白
-     *  source  — hook g9.h.j() 返回 0（默认；覆盖层架构下触摸路径原生化，实测留白清零生效）
+     *  source  — hook 留白静态方法返回 0（默认；10.4.81.0 为 ya.h.j()，混淆名随版本漂移；
+     *            失配自动降级 View.setPadding 平台收口。覆盖层架构下触摸路径原生化，
+     *            实测留白清零生效）
      *  applier — j() 保持真实值，改写最终落地 padding 的应用点（libxposed 102 不可改参，
      *            已改为 proceed 后重入落地，见 ModernFacade.mapIntArg；创建期 padding
      *            由装配后扫描兜底，暂不默认） */

@@ -216,6 +216,10 @@ object WeiboAdapter : AppAdapter {
         facade: HookFacade,
         config: () -> ModuleConfig,
     ) {
+        // 背景采样去重（v2.2，与小红书/高德/相册对齐，模块配置 lightweightSampling 可
+        // 远程关）：三个玻璃节点每帧各自对 appRoot 全树 draw → 1× RenderNode 录制 +
+        // 三节点回放（信息流重内容页滚动卡顿主源）。
+        session.dedupeBackdropSampling = config().lightweightSampling
         // 显隐门控：沉浸场景（微博正文/全屏视频）应用对 main_radio 做平移下滑 +
         // visibility INVISIBLE。INVISIBLE 走 isShown 判定；平移过程按过半即藏，避免玻璃
         // 滞留在已滑走的内容上。

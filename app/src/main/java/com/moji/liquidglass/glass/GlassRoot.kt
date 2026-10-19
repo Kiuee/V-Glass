@@ -201,7 +201,10 @@ fun GlassRoot(
             // 的空白帧最多停留 ~33ms 自愈（不会像纯事件驱动那样冻帧），省下大部分空闲开销
             val fullRate = !session.tickEventDriven || contentDirty[0] ||
                 session.tabAnimating || session.contentActive
-            if (fullRate) {
+            if (!fullRate && session.shouldIdleYield(now / 1_000_000L, contentDirty[0])) {
+                // 静止空闲让步：本帧不 tick，给宿主主队列留出 IdleHandler 冲刷间隙
+                // （见 GlassSession.shouldIdleYield）
+            } else if (fullRate) {
                 contentDirty[0] = false
                 val renderInterval = session.glassRenderIntervalNs
                 if (!session.tickEventDriven || renderInterval <= 0L || now - tickGate[0] >= renderInterval) {

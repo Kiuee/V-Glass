@@ -174,6 +174,40 @@ class GlassSession(
     val contentActive: Boolean
         get() = android.os.SystemClock.elapsedRealtime() < activeUntilMs
 
+    // —— 静态空闲让步（v1.8，事件驱动会话）：帧循环常驻会使宿主主线程消息队列整场
+    //    不空闲，宿主挂在 MessageQueue.IdleHandler 上的任务被无限期饿死（小红书切页
+    //    oec.f.S0 滞留实证，引擎级已知限制）。内容完全静止时周期性暂停 tick 一个短窗，
+    //    让队列出现真正的空闲间隙冲刷积压任务。静止期玻璃无内容变化，让步零视觉代价；
+    //    任何内容重绘信号/动画/交互活动窗口都会立即终止让步。每帧 tick 模式（无内容
+    //    信号，静止不可判定）不启用，其 IdleHandler 依赖由适配器侧同步重放解决。——
+    @Volatile
+    private var lastIdleYieldMs = 0L
+    @Volatile
+    private var idleYieldUntilMs = 0L
+
+    /**
+     * 静止空闲让步窗口判定（仅 [tickEventDriven] 会话）。帧循环每帧调用（主线程），
+     * [nowMs] 为帧时钟毫秒（与调用方同源即可，内部不做跨时钟比较）。
+     *
+     * @param contentDirty 本帧内容重绘脏标记（GlassRoot 持有）
+     * @return true = 本帧跳过 tick（让步窗口生效中）
+     */
+    fun shouldIdleYield(nowMs: Long, contentDirty: Boolean): Boolean {
+        if (!tickEventDriven) return false
+        if (contentDirty || tabAnimating || contentActive) {
+            idleYieldUntilMs = 0L
+            return false
+        }
+        if (nowMs < idleYieldUntilMs) return true
+        if (nowMs - lastIdleYieldMs >= IDLE_YIELD_PERIOD_MS) {
+            lastIdleYieldMs = nowMs
+            idleYieldUntilMs = nowMs + IDLE_YIELD_WINDOW_MS
+            logger?.invoke("idle yield window ${IDLE_YIELD_WINDOW_MS}ms (flush host IdleHandlers)")
+            return true
+        }
+        return false
+    }
+
     /** WHOLE_TAB 图标帧预览钩子：返回指定 tab 的"选中动画 Lottie drawable"（任意对象，
      *  引擎反射 setProgress 驱动并临时挂载到该 tab 图标 ImageView 使帧可被镜像），取不到
      *  返回 null。未注入（相册走 setChecked 原生路径，图标外观自带选中态）时图标帧预览
@@ -226,7 +260,10 @@ class GlassSession(
         }
         isTabPreviewActive = false // 正式点击切换：选中翻转的切页副作用必须放行
         val start = android.os.SystemClock.elapsedRealtime()
-        view.performClick()
+        // 描述符接管点击派发（如小红书：生效监听在祖先容器，条目 performClick 无效，
+        // 走适配器的穿透式点击）；默认对条目视图 performClick 走应用自身监听器。
+        extractor.descriptor.tabClickHandler?.invoke(index, tabViews, tabContainer)
+            ?: view.performClick()
         val cost = android.os.SystemClock.elapsedRealtime() - start
         if (cost > 100) {
             logger?.invoke("performClick(index=$index) blocked main thread for ${cost}ms")
@@ -251,6 +288,10 @@ class GlassSession(
     private var selectedLottie: View? = null
     /** 拖动预览中临时置为末帧的 lottie（非正式选中）。 */
     private var previewLottie: View? = null
+    /** 上一次进入动画的 tab 下标（选中切换时对其做双 Lottie 全量复位）。 */
+    private var lastAnimatedIndex = -1
+    /** 复位时观测到非零帧/动画器存活的取证（只记首条，防刷屏）。 */
+    private var resetObservedDirty = false
     private val lottieCache = HashMap<Int, View?>()
 
     private fun lottieAt(index: Int): View? = lottieCache.getOrPut(index) {
@@ -261,6 +302,49 @@ class GlassSession(
         (0 until tabViews.size).firstOrNull { lottieAt(it) === lottie } ?: -1
 
     /**
+     * 复位一个 Lottie 到未选中基帧：`cancelAnimation()` 先于 `setProgress(0)`——
+     * 与应用自身复位语义逐字一致（商店 TabView.v(true)）。cancel 在动画器仍处
+     * started 态时触发 onAnimationCancel，应用的图标选中色回调借此翻回未选中色
+     * （TabView 的 t(D && isSelected())：onAnimationStart→品牌色、onAnimationCancel→
+     * 按 isSelected 回归）；引擎的 setProgress 直写不产生任何动画器事件，选中色
+     * 回调会滞留品牌色帧，呈"切走后图标未恢复未选中"（刷新完成动画播放过再切走
+     * 时的低概率路径，真机实测）。失败静默（应用换非 Lottie 实现时由 setLottieProgress
+     * 的既有软失败兜底）。
+     */
+    private fun resetLottieToBase(lottie: View) {
+        runCatching {
+            lottie.javaClass.getMethod("cancelAnimation").invoke(lottie)
+        }
+        setLottieProgress(lottie, 0f)
+    }
+
+    /**
+     * 旧选中 tab 的双 Lottie（主 + 刷新）全量复位：商店首页是双 Lottie，可见性由
+     * 应用刷新态状态机翻转——单跟踪 selectedLottie 只覆盖装配/选中时刻的可见者，
+     * 刷新态中切走的路径会漏掉主 Lottie（其上还挂着引擎上次驱动的选中末帧或应用
+     * 刷新完成动画的残留进度）。全量复位对齐应用自身不变量：未选中 = 两枚 Lottie
+     * 都在基帧（v(true) 同款）。应用早一步复位时此处幂等无害。
+     */
+    private fun resetPreviousTabLotties(previousIndex: Int) {
+        if (previousIndex !in tabViews.indices) return
+        for (lottie in extractor.findLottieViews(tabViews[previousIndex])) {
+            if (!resetObservedDirty) {
+                val dirty = runCatching {
+                    lottie.javaClass.getMethod("isAnimating").invoke(lottie) as Boolean
+                }.getOrDefault(false) ||
+                    runCatching {
+                        lottie.javaClass.getMethod("getProgress").invoke(lottie) as Float
+                    }.getOrDefault(0f) != 0f
+                if (dirty) {
+                    resetObservedDirty = true
+                    logger?.invoke("tab reset: prev tab #$previousIndex lottie dirty (progress/animating) -> cancel+0")
+                }
+            }
+            resetLottieToBase(lottie)
+        }
+    }
+
+    /**
      * 开始播放指定 tab 的 Lottie 进入动画：记录起点与时长，由 [driveTabAnimation]
      * 逐帧推进。若目标已在拖动预览末帧（拖动后松手），跳过动画直接定帧；
      * 上一个选中 tab 复位到基础帧。主线程调用。
@@ -269,6 +353,11 @@ class GlassSession(
         // WHOLE_TAB 系（相册/微博）：选中变化（玻璃侧点击与应用侧同步都经此入口）伴随
         // 图标动画，开满帧率窗口让镜像逐帧跟随
         if (extractor.descriptor.iconMode != IconMode.LOTTIE_RESOLVE) armActivityWindow()
+        // 旧选中 tab 先全量复位（双 Lottie、cancel+0）：拖动预览提交后这里同样走到，
+        // 预览末帧残留一并清掉
+        val previous = lastAnimatedIndex
+        lastAnimatedIndex = index
+        if (previous != index) resetPreviousTabLotties(previous)
         val lottie = lottieAt(index)
         if (lottie == null) {
             animLottie = null
@@ -277,9 +366,9 @@ class GlassSession(
             return
         }
         val fromPreview = lottie === previewLottie
-        previewLottie?.takeIf { it !== lottie }?.let { setLottieProgress(it, 0f) }
+        previewLottie?.takeIf { it !== lottie }?.let { resetLottieToBase(it) }
         previewLottie = null
-        selectedLottie?.takeIf { it !== lottie }?.let { setLottieProgress(it, 0f) }
+        selectedLottie?.takeIf { it !== lottie }?.let { resetLottieToBase(it) }
         selectedLottie = lottie
         if (fromPreview) {
             animLottie = null
@@ -323,7 +412,7 @@ class GlassSession(
         if (targetLottie === selectedLottie) {
             // 拖回原 tab：复位预览目标并还原选中态
             previewLottie?.let {
-                setLottieProgress(it, 0f)
+                resetLottieToBase(it)
                 setTabSelected(tabIndexOfLottie(it), false)
             }
             previewLottie = null
@@ -335,11 +424,11 @@ class GlassSession(
         // 悬停新 tab：挂起进行中的进入动画（避免双写进度），复位旧预览与原选中
         animLottie = null
         previewLottie?.let {
-            setLottieProgress(it, 0f)
+            resetLottieToBase(it)
             setTabSelected(tabIndexOfLottie(it), false)
         }
         selectedLottie?.let {
-            setLottieProgress(it, 0f)
+            resetLottieToBase(it)
             setTabSelected(tabIndexOfLottie(it), false)
         }
         setLottieProgress(targetLottie, 1f)
@@ -566,3 +655,7 @@ class GlassSession(
         }
     }
 }
+
+/** 静态空闲让步的触发周期（静止持续多久让步一次）与窗口时长（GlassSession.shouldIdleYield）。 */
+private const val IDLE_YIELD_PERIOD_MS = 10_000L
+private const val IDLE_YIELD_WINDOW_MS = 120L

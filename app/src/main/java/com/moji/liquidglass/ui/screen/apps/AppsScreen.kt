@@ -22,8 +22,9 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
     val noteStore = stringResource(R.string.app_note_store)
     val noteGallery = stringResource(R.string.app_note_gallery)
     val noteAmap = stringResource(R.string.app_note_amap)
+    val noteXhs = stringResource(R.string.app_note_xhs)
     val appsNote = stringResource(R.string.apps_note)
-    return remember(noteStore, noteGallery, noteAmap, appsNote) {
+    return remember(noteStore, noteGallery, noteAmap, noteXhs, appsNote) {
         AdapterRegistry.all.map { adapter ->
             TargetAppInfo(
                 displayName = adapter.displayName,
@@ -32,6 +33,7 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
                     "com.bbk.appstore" -> noteStore
                     "com.vivo.gallery" -> noteGallery
                     "com.autonavi.minimap" -> noteAmap
+                    "com.xingin.xhs" -> noteXhs
                     else -> ""
                 },
             )

@@ -59,6 +59,12 @@ data class TabBarDescriptor(
      *  一起染成强调色，图标在液泡内呈实心，且动画结束切到真透明间隙的静态图时产生
      *  "染色实心 → 镂空"闪现。关闭后液泡折射未染色副本 = 原样图标。 */
     val tintRefractionContent: Boolean = true,
+    /** 点击转发接管（默认 null = 对条目视图 [View.performClick]）。条目自身无点击监听器
+     *  /监听器链被应用侧机制架空的应用（如小红书：生效监听在祖先容器，参考 LiquidTab
+     *  XhsNavigationState.performTap 的穿透式点击），适配器提供自己的派发逻辑，参数
+     *  (槽位下标, 条目视图列表, 底栏容器)。实现须与原生点击同语义（切页/回顶）；拖动
+     *  预览的选中翻转仍走 itemChecked* 通道，不受本字段影响。 */
+    val tabClickHandler: ((slotIndex: Int, tabViews: List<View>, tabContainer: View) -> Unit)? = null,
 )
 
 /**
@@ -288,6 +294,17 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
             tab.findViewById<View>(id)?.takeIf { it.visibility == View.VISIBLE }?.let { return it }
         }
         return preferred.firstNotNullOfOrNull { role ->
+            val id = roleId(context, role)
+            if (id == 0) null else tab.findViewById<View>(id)
+        }
+    }
+
+    /** 双 Lottie 全量解析（主 + 刷新，无论可见性）：复位类操作用——商店首页图标是
+     *  双 Lottie（lottie_view 主 / lottie_view_refresh 刷新），可见性由应用刷新态
+     *  状态机翻转，单视图跟踪会漏掉不可见者。 */
+    fun findLottieViews(tab: View): List<View> {
+        val context = tab.context
+        return listOf(TabRole.ICON_LOTTIE, TabRole.REFRESH_LOTTIE).mapNotNull { role ->
             val id = roleId(context, role)
             if (id == 0) null else tab.findViewById<View>(id)
         }
