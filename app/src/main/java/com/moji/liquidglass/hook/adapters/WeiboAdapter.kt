@@ -38,6 +38,7 @@ object WeiboAdapter : AppAdapter {
     override val targetPackage: String = "com.sina.weibo"
     override val displayName: String = "微博"
     override val tabActivityClassName: String? = "com.sina.weibo.MainTabActivity"
+    override val baselineVersions: List<String> = listOf("16.10.0")
 
     private const val BAR_ID_NAME = "main_radio"
     private const val ITEM_CLASS = "com.sina.weibo.bottombar.view.TabViewGroupV2"

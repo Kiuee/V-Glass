@@ -37,6 +37,7 @@ object GalleryAdapter : AppAdapter {
     override val targetPackage: String = "com.vivo.gallery"
     override val displayName: String = "vivo 相册"
     override val tabActivityClassName: String? = "com.android.gallery3d.vivo.GalleryTabActivity"
+    override val baselineVersions: List<String> = listOf("10.1.6.4")
 
     private const val BAR_CLASS = "com.android.gallery3d.vivo.main.base.GalleryBottomBar"
     // 注意双层 navigation 包（jadx 目录 navigation/navigation/ 实证）

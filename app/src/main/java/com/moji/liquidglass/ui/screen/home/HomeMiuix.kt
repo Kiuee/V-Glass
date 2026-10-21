@@ -1,9 +1,9 @@
 package com.moji.liquidglass.ui.screen.home
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -20,15 +20,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.filled.DeveloperBoard
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.rounded.CheckCircleOutline
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -36,23 +39,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.moji.liquidglass.R
 import com.moji.liquidglass.ui.ServiceBridge
+import com.moji.liquidglass.ui.component.WarningCard
+import com.moji.liquidglass.ui.component.WarningLevel
 import com.moji.liquidglass.ui.theme.LocalEnableBlur
+import com.moji.liquidglass.ui.theme.isInDarkTheme
 import com.moji.liquidglass.ui.util.BlurredBar
 import com.moji.liquidglass.ui.util.rememberBlurBackdrop
+import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
+import top.yukonga.miuix.kmp.theme.MiuixTheme.isDynamicColor
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
-/** 主页 Miuix 版（对齐参考项目 HomePagerMiuix）：大状态卡 + 版本 InfoCard + 单行说明条目。 */
+/** 主页 Miuix 版（对齐参考项目 HomePagerMiuix）：警告条 + 三态状态卡 + 带图标 InfoCard + 单行说明条目。 */
 @Composable
 fun HomePagerMiuix(bottomInnerPadding: Dp) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -61,14 +72,7 @@ fun HomePagerMiuix(bottomInnerPadding: Dp) {
     val blurActive = backdrop != null
     val barColor = if (blurActive) Color.Transparent else colorScheme.surface
     val status = rememberBridgeStatus()
-    val context = LocalContext.current
-    val versionName = remember(context) {
-        try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-        } catch (_: Exception) {
-            "?"
-        }
-    }
+    val systemInfo = rememberHomeSystemInfo()
 
     Scaffold(
         topBar = {
@@ -97,11 +101,18 @@ fun HomePagerMiuix(bottomInnerPadding: Dp) {
             ) {
                 item {
                     Column(
-                        modifier = Modifier.padding(vertical = 12.dp),
+                        modifier = Modifier.padding(top = 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        if (status.warning.isNotBlank()) {
+                            WarningCard(
+                                message = status.warning,
+                                level = WarningLevel.Error,
+                            )
+                        }
                         StatusCardMiuix(status)
-                        InfoCardMiuix(versionName)
+                        InfoCardMiuix(systemInfo)
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Column {
                                 MiuixNoteRow(text = stringResource(R.string.usage_step_1))
@@ -123,93 +134,183 @@ fun HomePagerMiuix(bottomInnerPadding: Dp) {
     }
 }
 
-/** 模块状态卡（参考 PermissionCardMiuix）：164dp 大卡 + 右下大图标 + 底部状态行，未连接点击重连。 */
+/**
+ * 模块状态卡三态（对齐参考项目 StatusCard Miuix 版）：
+ * 已连接 = 大绿卡（右下大图标 + 左下框架名 + 顶部标题/说明）；
+ * 未连接 = BasicComponent 小卡 + 右侧重连按钮；点击卡片即重连。
+ */
 @Composable
 private fun StatusCardMiuix(status: BridgeStatus) {
-    val connected = status.connected
-    val iconColor = if (connected) Color(0xFF36D167) else Color(0xFFF72727)
-    val containerColor = if (connected) Color(0xFFDFFAE4) else Color(0xFFF8E2E2)
-    val textColor = Color(0xFF111111)
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.defaultColors(color = containerColor),
-        onClick = { if (!connected) ServiceBridge.rebind() },
-        showIndication = true,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(164.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .offset(x = 70.dp, y = 44.dp),
-                contentAlignment = Alignment.BottomEnd,
+    when {
+        status.connected -> {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.defaultColors(
+                    color = when {
+                        isDynamicColor -> colorScheme.secondaryContainer
+                        isInDarkTheme() -> Color(0xFF1A3825)
+                        else -> Color(0xFFDFFAE4)
+                    },
+                ),
             ) {
-                Icon(
-                    modifier = Modifier.size(182.dp),
-                    imageVector = if (connected) Icons.Rounded.CheckCircleOutline else Icons.Rounded.Cancel,
-                    tint = iconColor,
-                    contentDescription = null,
-                )
-            }
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = 24.dp, top = 28.dp, end = 148.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = status.headline,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = textColor,
-                    )
-                    Text(
-                        text = status.summary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor.copy(alpha = 0.72f),
-                    )
-                    if (status.detail.isNotEmpty()) {
-                        Text(
-                            text = status.detail,
-                            fontSize = 13.sp,
-                            color = textColor.copy(alpha = 0.66f),
+                Box {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .offset(27.dp, 31.dp),
+                        contentAlignment = Alignment.BottomEnd,
+                    ) {
+                        Icon(
+                            modifier = Modifier.size(110.dp),
+                            imageVector = Icons.Rounded.CheckCircleOutline,
+                            tint = if (isDynamicColor) {
+                                colorScheme.primary.copy(alpha = 0.8f)
+                            } else {
+                                Color(0xFF36D167)
+                            },
+                            contentDescription = null,
                         )
                     }
+                    if (status.modeLabel.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .padding(16.dp, 10.dp),
+                            contentAlignment = Alignment.BottomStart,
+                        ) {
+                            Text(
+                                text = status.modeLabel,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .padding(16.dp, 14.dp),
+                        contentAlignment = Alignment.TopStart,
+                    ) {
+                        Column {
+                            Text(
+                                text = status.title,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Spacer(Modifier.height(1.dp))
+                            Text(
+                                text = status.summary,
+                                fontSize = 15.sp,
+                            )
+                        }
+                    }
                 }
-                Text(
-                    text = status.chipLabel,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = textColor.copy(alpha = 0.78f),
-                )
+            }
+        }
+
+        else -> {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Card(
+                    modifier = Modifier.weight(1f),
+                    onClick = { ServiceBridge.rebind() },
+                    showIndication = true,
+                    pressFeedbackType = PressFeedbackType.Tilt,
+                ) {
+                    BasicComponent(
+                        title = status.title,
+                        summary = if (status.detail.isEmpty()) status.summary else "${status.summary}\n${status.detail}",
+                        startAction = {
+                            Icon(
+                                Icons.Rounded.ErrorOutline,
+                                status.title,
+                                modifier = Modifier.padding(end = 6.dp),
+                                tint = colorScheme.onBackground,
+                            )
+                        },
+                        endActions = {
+                            TextButton(
+                                text = stringResource(R.string.reconnect),
+                                onClick = { ServiceBridge.rebind() },
+                                colors = ButtonDefaults.textButtonColorsPrimary(),
+                            )
+                        },
+                    )
+                }
             }
         }
     }
 }
 
-/** 版本信息卡（参考 InfoCard / InfoText）。 */
+/** 设备信息卡（对齐参考项目 InfoCard Miuix 版：图标 + 标题 + 内容，双卡分组）。 */
 @Composable
-private fun InfoCardMiuix(versionName: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
+private fun InfoCardMiuix(systemInfo: HomeSystemInfo) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                InfoText(
+                    icon = Icons.Filled.Tag,
+                    title = stringResource(R.string.home_app_version),
+                    content = systemInfo.appVersion,
+                )
+                InfoText(
+                    icon = Icons.Filled.DeveloperBoard,
+                    title = stringResource(R.string.home_system_version),
+                    content = systemInfo.androidVersion,
+                )
+                InfoText(
+                    icon = Icons.Filled.Smartphone,
+                    title = stringResource(R.string.home_device_model),
+                    content = systemInfo.deviceModel,
+                    bottomPadding = 0.dp,
+                )
+            }
+        }
+        if (systemInfo.frameworkVersion.isNotEmpty()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    InfoText(
+                        icon = Icons.Filled.Security,
+                        title = stringResource(R.string.home_framework),
+                        content = systemInfo.frameworkVersion,
+                        bottomPadding = 0.dp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 信息行：24dp 图标 + 标题/内容两行（对齐参考项目 InfoText）。 */
+@Composable
+private fun InfoText(
+    icon: ImageVector,
+    title: String,
+    content: String,
+    bottomPadding: Dp = 24.dp,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = bottomPadding),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = title,
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-        ) {
+                .padding(end = 12.dp)
+                .size(24.dp),
+            tint = colorScheme.onSurface,
+        )
+        Column {
             Text(
-                text = stringResource(R.string.home_app_version),
+                text = title,
                 fontSize = MiuixTheme.textStyles.headline1.fontSize,
                 fontWeight = FontWeight.Medium,
                 color = colorScheme.onSurface,
             )
             Text(
-                text = versionName,
+                text = content,
                 fontSize = MiuixTheme.textStyles.body2.fontSize,
                 color = colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 2.dp),

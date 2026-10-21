@@ -4,7 +4,6 @@ package com.moji.liquidglass.ui.screen.home
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -16,49 +15,50 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.filled.DeveloperBoard
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.moji.liquidglass.R
 import com.moji.liquidglass.ui.ServiceBridge
+import com.moji.liquidglass.ui.component.StatusTag
+import com.moji.liquidglass.ui.component.WarningCard
+import com.moji.liquidglass.ui.component.WarningLevel
 import com.moji.liquidglass.ui.component.material.SegmentedColumn
+import com.moji.liquidglass.ui.component.material.SegmentedInfoItem
 import com.moji.liquidglass.ui.component.material.SegmentedNoteItem
-import com.moji.liquidglass.ui.component.material.TonalCard
 
-/** 主页 Material 版（对齐参考项目 HomePagerMaterial）：状态卡 + 版本 InfoCard + 单行说明条目。 */
+/** 主页 Material 版（对齐参考项目 HomePagerMaterial）：警告条 + 三态状态卡 + 带图标 InfoCard + 说明分组。 */
 @Composable
 fun HomePagerMaterial(bottomInnerPadding: Dp) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     val status = rememberBridgeStatus()
-    val context = LocalContext.current
-    val versionName = remember(context) {
-        try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-        } catch (_: Exception) {
-            "?"
-        }
-    }
+    val systemInfo = rememberHomeSystemInfo()
 
     Scaffold(
         topBar = {
@@ -80,25 +80,16 @@ fun HomePagerMaterial(bottomInnerPadding: Dp) {
                 .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(13.dp),
         ) {
-            StatusCardMaterial(status)
-
-            // 版本信息卡（参考 InfoCard / InfoCardItem）
-            TonalCard {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp),
-                ) {
-                    Text(stringResource(R.string.home_app_version), style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        versionName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
+            if (status.warning.isNotBlank()) {
+                WarningCard(
+                    message = status.warning,
+                    level = WarningLevel.Error,
+                )
             }
+            StatusCardMaterial(status)
+            InfoCardMaterial(systemInfo)
 
             // 使用方法：一行一步
             SegmentedColumn(
@@ -124,68 +115,156 @@ fun HomePagerMaterial(bottomInnerPadding: Dp) {
     }
 }
 
-/** 模块状态卡（参考 PermissionCard）：状态配色 + 右侧 AssistChip。 */
+/**
+ * 模块状态卡三态（对齐参考项目 StatusCard Material 版）：
+ * Surface 大圆角容器 + ListItem；已连接 = secondaryContainer + 对勾 + 框架名标签；
+ * 未连接 = errorContainer + 警告/禁止图标 + 重连按钮；点击未连接卡片即重连。
+ */
 @Composable
 private fun StatusCardMaterial(status: BridgeStatus) {
-    val contentColor = if (status.connected) {
-        MaterialTheme.colorScheme.onSecondaryContainer
+    val containerColor = if (status.connected) {
+        MaterialTheme.colorScheme.secondaryContainer
     } else {
-        MaterialTheme.colorScheme.onErrorContainer
+        MaterialTheme.colorScheme.errorContainer
     }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (status.connected) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            },
-            contentColor = contentColor,
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = status.headline,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(text = status.summary, style = MaterialTheme.typography.bodySmall)
-                    if (status.detail.isNotEmpty()) {
-                        Text(text = status.detail, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                AssistChip(
-                    onClick = { },
-                    colors = AssistChipDefaults.assistChipColors(
-                        labelColor = contentColor,
-                        leadingIconContentColor = contentColor,
-                    ),
-                    label = { Text(status.chipLabel) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = if (status.connected) Icons.Filled.CheckCircle else Icons.Filled.ErrorOutline,
-                            contentDescription = null,
-                        )
-                    },
+    val contentColor = MaterialTheme.colorScheme.contentColorFor(containerColor)
+
+    val statusIcon: ImageVector = when {
+        status.connected -> Icons.Rounded.CheckCircle
+        status.isError -> Icons.Rounded.Block
+        else -> Icons.Rounded.Warning
+    }
+
+    val trailing: (@Composable () -> Unit)? = if (status.connected) {
+        if (status.modeLabel.isNotEmpty()) {
+            {
+                StatusTag(
+                    label = status.modeLabel,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    backgroundColor = MaterialTheme.colorScheme.primary,
                 )
             }
-            if (!status.connected) {
-                TextButton(
-                    onClick = { ServiceBridge.rebind() },
-                    modifier = Modifier.align(Alignment.End),
-                ) {
-                    Text(stringResource(R.string.reconnect))
+        } else {
+            null
+        }
+    } else {
+        {
+            Button(
+                onClick = { ServiceBridge.rebind() },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+            ) {
+                Text(stringResource(R.string.reconnect))
+            }
+        }
+    }
+
+    if (status.connected) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = containerColor,
+            contentColor = contentColor,
+            shape = MaterialTheme.shapes.large,
+        ) {
+            StatusListItem(status, statusIcon, trailing, contentColor)
+        }
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = containerColor,
+            contentColor = contentColor,
+            shape = MaterialTheme.shapes.large,
+            onClick = { ServiceBridge.rebind() },
+        ) {
+            StatusListItem(status, statusIcon, trailing, contentColor)
+        }
+    }
+}
+
+@Composable
+private fun StatusListItem(
+    status: BridgeStatus,
+    statusIcon: ImageVector,
+    trailing: (@Composable () -> Unit)?,
+    contentColor: Color,
+) {
+    ListItem(
+        headlineContent = {
+            Text(
+                text = status.title,
+                style = MaterialTheme.typography.titleMediumEmphasized,
+            )
+        },
+        leadingContent = { Icon(statusIcon, contentDescription = status.title) },
+        trailingContent = trailing,
+        overlineContent = null,
+        supportingContent = {
+            Column {
+                Text(text = status.summary, style = MaterialTheme.typography.bodyMedium)
+                if (status.detail.isNotEmpty()) {
+                    Text(
+                        text = status.detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = contentColor.copy(alpha = 0.7f),
+                    )
                 }
             }
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = Color.Transparent,
+            contentColor = contentColor,
+            leadingContentColor = contentColor,
+            trailingContentColor = contentColor,
+            supportingContentColor = contentColor.copy(alpha = 0.7f),
+        ),
+    )
+}
+
+/** 设备信息卡（对齐参考项目 InfoCard Material 版：图标 + 标题 + 内容，双分组）。 */
+@Composable
+private fun InfoCardMaterial(systemInfo: HomeSystemInfo) {
+    Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
+        SegmentedColumn(
+            modifier = Modifier.fillMaxWidth(),
+            content = listOf(
+                {
+                    SegmentedInfoItem(
+                        icon = Icons.Filled.Tag,
+                        title = stringResource(R.string.home_app_version),
+                        content = systemInfo.appVersion,
+                    )
+                },
+                {
+                    SegmentedInfoItem(
+                        icon = Icons.Filled.DeveloperBoard,
+                        title = stringResource(R.string.home_system_version),
+                        content = systemInfo.androidVersion,
+                    )
+                },
+                {
+                    SegmentedInfoItem(
+                        icon = Icons.Filled.Smartphone,
+                        title = stringResource(R.string.home_device_model),
+                        content = systemInfo.deviceModel,
+                    )
+                },
+            ),
+        )
+        if (systemInfo.frameworkVersion.isNotEmpty()) {
+            SegmentedColumn(
+                modifier = Modifier.fillMaxWidth(),
+                content = listOf(
+                    {
+                        SegmentedInfoItem(
+                            icon = Icons.Filled.Security,
+                            title = stringResource(R.string.home_framework),
+                            content = systemInfo.frameworkVersion,
+                        )
+                    },
+                ),
+            )
         }
     }
 }

@@ -93,6 +93,7 @@ object AmapAdapter : AppAdapter {
     override val targetPackage: String = "com.autonavi.minimap"
     override val displayName: String = "高德地图"
     override val tabActivityClassName: String? = "com.autonavi.map.activity.NewMapActivity"
+    override val baselineVersions: List<String> = listOf("17.01.0.2012")
 
     private const val BAR_CLASS = "com.autonavi.bundle.uitemplate.tab.LiteTabBar"
     private const val ITEM_CLASS = "com.autonavi.bundle.uitemplate.tab.view.TabItemLayoutV2"

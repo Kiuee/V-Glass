@@ -32,6 +32,21 @@ interface AppAdapter {
     /** 主 Tab Activity 类名（导航栏呈现等仅在该页生效；null = 不判定）。 */
     val tabActivityClassName: String?
 
+    /**
+     * 深度逆向适配的基准版本（完成锚点级适配的版本，升版逆向后更新此列表
+     * 并同步 MAINTENANCE.md 对应章节的「基准版本」行）。
+     */
+    val baselineVersions: List<String> get() = emptyList()
+
+    /**
+     * 最终已适配版本列表（管理器应用页据此显示已适配/未适配 chip 与展开列表）：
+     * = [baselineVersions] + [AdaptedVersionRegistry] 集中追加的免适配版本，按序去重。
+     * 精确匹配：已安装版本不在列表内 = 未适配，仅提示兼容性风险，不禁用功能。
+     */
+    val adaptedVersions: List<String>
+        get() = (baselineVersions + AdaptedVersionRegistry.extraAdaptedVersions[targetPackage].orEmpty())
+            .distinct()
+
     /** 底栏结构描述符。 */
     val descriptor: TabBarDescriptor
 

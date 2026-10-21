@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.DropdownMenuGroup
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItemColors
 import androidx.compose.material3.ListItemDefaults
@@ -155,6 +156,47 @@ fun SegmentedSwitchItem(
                 onCheckedChange = null,
                 interactionSource = interactionSource,
             )
+        },
+        supportingContent = summary?.let { { Text(it, style = MaterialTheme.typography.bodyMedium) } },
+    )
+}
+
+/** 勾选条目：整行点击 + 触觉反馈 + 勾选框，trailingContent（如适配 chip）置于勾选框左侧。 */
+@Composable
+fun SegmentedCheckboxItem(
+    icon: ImageVector? = null,
+    title: String,
+    summary: String? = null,
+    trailingContent: (@Composable () -> Unit)? = null,
+    colors: ListItemColors = defaultSegmentedColors(),
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+
+    SegmentedListItem(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
+            onCheckedChange(!checked)
+        },
+        enabled = enabled,
+        interactionSource = interactionSource,
+        colors = colors,
+        shapes = LocalListItemShapes.current ?: ListItemDefaults.segmentedShapes(0, 1),
+        content = { Text(title) },
+        leadingContent = icon?.let { { Icon(it, title) } },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                trailingContent?.invoke()
+                Checkbox(
+                    checked = checked,
+                    onCheckedChange = null,
+                    enabled = enabled,
+                    interactionSource = interactionSource,
+                )
+            }
         },
         supportingContent = summary?.let { { Text(it, style = MaterialTheme.typography.bodyMedium) } },
     )
@@ -312,6 +354,28 @@ fun SegmentedNoteItem(
         colors = colors,
         headlineContent = { Text(text, style = MaterialTheme.typography.bodyMedium, color = colorScheme.onSurfaceVariant) },
         leadingContent = icon?.let { { Icon(it, text, tint = colorScheme.outline) } },
+    )
+}
+
+/** 信息条目：图标 + 标题 + 内容副文本（对齐参考项目 InfoCardItem）。 */
+@Composable
+fun SegmentedInfoItem(
+    icon: ImageVector,
+    title: String,
+    content: String,
+    colors: ListItemColors = defaultSegmentedColors(),
+) {
+    SegmentedItem(
+        colors = colors,
+        headlineContent = { Text(title, style = MaterialTheme.typography.bodyLarge) },
+        leadingContent = { Icon(icon, title) },
+        supportingContent = {
+            Text(
+                content,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colorScheme.onSurfaceVariant,
+            )
+        },
     )
 }
 

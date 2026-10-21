@@ -33,6 +33,7 @@ object AppStoreAdapter : AppAdapter {
     override val targetPackage: String = "com.bbk.appstore"
     override val displayName: String = "vivo 应用商店"
     override val tabActivityClassName: String? = "com.bbk.appstore.ui.AppStoreTabActivity"
+    override val baselineVersions: List<String> = listOf("10.4.81.0")
 
     private const val TAB_VIEW_CLASS = "com.bbk.appstore.ui.tab.TabView"
 

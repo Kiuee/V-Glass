@@ -41,6 +41,7 @@ object VivoSpaceAdapter : AppAdapter {
     override val targetPackage: String = "com.vivo.space"
     override val displayName: String = "vivo 官网"
     override val tabActivityClassName: String? = "com.vivo.space.ui.VivoSpaceTabActivity"
+    override val baselineVersions: List<String> = listOf("13.3.0.1")
 
     private const val BAR_CLASS = "com.vivo.space.lib.widget.originui.SpaceVBottomNavigationView"
     // 底栏在主布局中的资源 id（类名失配时的结构兜底）

@@ -31,6 +31,7 @@ object ManagerPrefs {
     private const val KEY_FLOATING_BOTTOM_BAR = "floating_bottom_bar"
     private const val KEY_FLOATING_BOTTOM_BAR_BLUR = "floating_bottom_bar_blur"
     private const val KEY_MIUIX_MONET = "miuix_monet"
+    private const val KEY_UNADAPTED_DISMISSED = "unadapted_dismissed_signature"
 
     private lateinit var prefs: SharedPreferences
 
@@ -43,6 +44,7 @@ object ManagerPrefs {
     private var floatingBottomBarState by mutableStateOf(true)
     private var floatingBottomBarBlurState by mutableStateOf(true)
     private var miuixMonetState by mutableStateOf(false)
+    private var unadaptedDismissedState by mutableStateOf("")
 
     /** 幂等，Application 与 Activity 均可调用。 */
     fun init(context: Context) {
@@ -69,6 +71,7 @@ object ManagerPrefs {
         floatingBottomBarState = prefs.getBoolean(KEY_FLOATING_BOTTOM_BAR, true)
         floatingBottomBarBlurState = prefs.getBoolean(KEY_FLOATING_BOTTOM_BAR_BLUR, true)
         miuixMonetState = prefs.getBoolean(KEY_MIUIX_MONET, false)
+        unadaptedDismissedState = prefs.getString(KEY_UNADAPTED_DISMISSED, null) ?: ""
     }
 
     val uiMode: UiMode get() = uiModeState
@@ -80,6 +83,9 @@ object ManagerPrefs {
     val floatingBottomBar: Boolean get() = floatingBottomBarState
     val floatingBottomBarBlur: Boolean get() = floatingBottomBarBlurState
     val miuixMonet: Boolean get() = miuixMonetState
+
+    /** 应用页未适配红条的已关闭签名：与当前未适配集签名一致时不显示，集合变化后重现。 */
+    val unadaptedDismissed: String get() = unadaptedDismissedState
 
     /**
      * 当前生效的主题参数。读取侧只做与参考 ThemeController.getAppSettings 相同的
@@ -190,7 +196,13 @@ object ManagerPrefs {
     }
 
     fun setFloatingBottomBarBlur(on: Boolean) {
-        floatingBottomBarBlurState = on
+        floatingBottomBarState = on
         prefs.edit().putBoolean(KEY_FLOATING_BOTTOM_BAR_BLUR, on).apply()
+    }
+
+    /** 记住「已关闭未适配红条」时的未适配集签名。 */
+    fun setUnadaptedDismissed(signature: String) {
+        unadaptedDismissedState = signature
+        prefs.edit().putString(KEY_UNADAPTED_DISMISSED, signature).apply()
     }
 }

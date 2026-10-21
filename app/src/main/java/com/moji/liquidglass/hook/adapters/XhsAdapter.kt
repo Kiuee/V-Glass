@@ -94,6 +94,7 @@ object XhsAdapter : AppAdapter {
     override val targetPackage: String = "com.xingin.xhs"
     override val displayName: String = "小红书"
     override val tabActivityClassName: String? = "com.xingin.xhs.index.v2.IndexActivityV2"
+    override val baselineVersions: List<String> = listOf("9.50.0")
 
     private const val BAR_CLASS = "com.xingin.xhs.homepage.tabbar.TabBarView"
     private const val MALL_BAR_CLASS = "com.xingin.commercial.shop.malltabbar.TabBarView"
