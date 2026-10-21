@@ -213,6 +213,18 @@ fun LiquidBottomTabs(
             }
         }
         CompositionLocalProvider(LocalTabPreviewIndex provides previewIndex) {
+        // 液泡覆盖槽位判定（suppressBubbleCoveredSlots 的数据源，默认无人消费 = 零影响）：
+        // 与下方液泡 graphicsLayer 同一动画状态源——中心距 = |槽位 − 液泡中心（含
+        // panelOffset 弹性平移）| < 半槽宽×scaleX（含速度拉伸）+ 图标半宽余量（0.15 槽宽）。
+        // 槽位中心 i+0.5、液泡中心 value+0.5+panelOffset/tabWidth（单位 = 槽宽）。
+        val bubbleCovered: (Int) -> Boolean = { index ->
+            val bubbleScaleX = dampedDragAnimation.scaleX /
+                (1f - (dampedDragAnimation.velocity / 10f * 0.75f).fastCoerceIn(-0.2f, 0.2f))
+            abs(
+                index - dampedDragAnimation.value - panelOffset / tabWidth
+            ) < 0.5f * bubbleScaleX + 0.15f
+        }
+        CompositionLocalProvider(LocalLiquidBottomTabBubbleCovered provides bubbleCovered) {
         Row(
             Modifier
                 .graphicsLayer {
@@ -241,6 +253,7 @@ fun LiquidBottomTabs(
             verticalAlignment = Alignment.CenterVertically,
             content = content
         )
+        }
 
         CompositionLocalProvider(
             LocalLiquidBottomTabScale provides {

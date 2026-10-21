@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
+import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
 import com.moji.liquidglass.glass.components.LiquidBottomTabs
@@ -352,8 +353,22 @@ fun GlassRoot(
                             } else {
                                 contentColor
                             }
+                        // 液泡覆盖槽位抑制（descriptor 声明式开关，默认 off = 既有应用渲染
+                        // 逐位不变）：被液泡覆盖的可见槽位整槽不绘制，泡内折射副本成为唯一
+                        // 图标来源。graphicsLayer 块在绘制相读取判定（与液泡同一动画状态源），
+                        // 运动期间随覆盖关系重建层，零重组。
+                        val isBubbleCovered = LocalLiquidBottomTabBubbleCovered.current
+                        val suppressBubbleCovered = session.extractor.descriptor.suppressBubbleCoveredSlots
                         spec.tabs.forEachIndexed { index, tab ->
-                            LiquidBottomTab(onClick = {
+                            LiquidBottomTab(
+                                modifier = if (suppressBubbleCovered) {
+                                    Modifier.graphicsLayer {
+                                        alpha = if (isBubbleCovered(index)) 0f else 1f
+                                    }
+                                } else {
+                                    Modifier
+                                },
+                                onClick = {
                                 selectedIndex = index
                                 session.onTabClicked(index)
                                 session.requestTick()

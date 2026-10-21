@@ -39,7 +39,15 @@ object GlassInstaller {
 
     fun install(activity: Activity, bar: View, tabViews: List<View>, extractor: TabExtractor): GlassSession? {
         val content = activity.findViewById<FrameLayout>(android.R.id.content) ?: return null
-        val appRoot = content.getChildAt(0) ?: return null
+        // 采样源 appRoot = **包含底栏的 content 直接子视图**：merge 布局应用的 content 有
+        // 多个子视图（原子笔记 = GONE 引导层 + 真实内容 + 闪屏），固定取 child(0) 会锚到
+        // 空视图，采样条带恒空 = 玻璃"透明"（§8.7 真机根因）。沿 bar 的 parent 链匹配
+        // content 直接子项；单子视图应用结果与 child(0) 相同，零回归。
+        var node = bar.parent
+        while (node is View && node.parent !== content) node = node.parent
+        val appRoot = (node as? View)?.takeIf { it.parent === content }
+            ?: content.getChildAt(0)
+            ?: return null
         if (appRoot is ComposeView) return null // 已装配
 
         val spec = extractor.extract(tabViews) ?: return null

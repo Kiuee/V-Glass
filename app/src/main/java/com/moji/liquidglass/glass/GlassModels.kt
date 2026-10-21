@@ -464,7 +464,11 @@ class GlassSession(
      *  完全还原并结束预览。相册经 setChecked 原生驱动同语义（见 previewIconLottie）。 */
     private fun previewWholeTab(target: Int) {
         if (target == wholeTabPreviewTarget) return
-        if (wholeTabSetChecked == null) return
+        // 纯反射入口守卫：条目上无 void(boolean) 翻转方法**且**描述符未声明 applier 时
+        // 预览无从翻转，放弃（静默降级，不崩溃）。有 applier 的适配器（高德/原子笔记）
+        // 经 setTabChecked 走直控通道——守卫必须把 applier 算进去，否则纯 applier 适配器
+        // （条目是普通 ViewGroup、无 setChecked 可解析）预览静默失效。
+        if (wholeTabSetChecked == null && extractor.descriptor.itemCheckedApplier == null) return
         val origin = wholeTabPreviewOrigin.takeIf { it >= 0 }
             ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
                 .also { wholeTabPreviewOrigin = it }

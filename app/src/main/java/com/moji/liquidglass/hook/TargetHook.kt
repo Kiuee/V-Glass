@@ -229,7 +229,7 @@ object TargetHook {
             facade.log(
                 android.util.Log.INFO,
                 "liquid glass bar installed (${adapter.displayName}): ${session.tabViews.size} tabs, " +
-                    "activity=${activity.javaClass.name}",
+                    "activity=${activity.javaClass.name}, appRoot=${session.appRoot.javaClass.name}",
             )
         } catch (t: Throwable) {
             facade.log(android.util.Log.WARN, "install failed (attempt $attempt)", t)

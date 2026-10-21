@@ -32,6 +32,16 @@ internal val LocalLiquidBottomTabScale =
  */
 val LocalTabPreviewIndex = staticCompositionLocalOf<State<Int>> { mutableIntStateOf(-1) }
 
+/**
+ * 液泡覆盖槽位判定（index → 该槽位当前是否被液泡覆盖）。由 LiquidBottomTabs 在可见
+ * 内容行外提供（判定与液泡 graphicsLayer 同一动画状态源，绘制相读取、不触发重组），
+ * GlassRoot 按 descriptor.suppressBubbleCoveredSlots 声明消费：被覆盖的可见槽位整槽
+ * 不绘制，泡内折射副本成为唯一图标来源（重影修复，§1.2）。默认实现恒 false——
+ * 无人声明 = 引擎渲染逐位不变。
+ */
+val LocalLiquidBottomTabBubbleCovered =
+    staticCompositionLocalOf<(index: Int) -> Boolean> { { false } }
+
 @Composable
 fun RowScope.LiquidBottomTab(
     onClick: () -> Unit,

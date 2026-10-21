@@ -59,6 +59,13 @@ data class TabBarDescriptor(
      *  一起染成强调色，图标在液泡内呈实心，且动画结束切到真透明间隙的静态图时产生
      *  "染色实心 → 镂空"闪现。关闭后液泡折射未染色副本 = 原样图标。 */
     val tintRefractionContent: Boolean = true,
+    /** 液泡覆盖槽位抑制（默认 false）。true 时被液泡覆盖的可见槽位整槽不绘制，泡内
+     *  折射副本成为唯一图标来源。液泡内图标来自隐形折射副本层的采样，按压/弹性运动时
+     *  副本缩放（1.2x）与液泡膨胀（1.39x）和可见槽位镜像（恒 1x）并存；副本被整层染色
+     *  的应用（默认 tintRefractionContent=true）副本呈纯色剪影、"读作高亮"不显重影，
+     *  关闭染色 + 多色动画图标的应用（原子笔记）会显形为两份错位重影。仅声明本开关的
+     *  应用消费（GlassRoot 按声明执行），默认关闭 = 既有应用渲染逐位不变（§0.4 红线）。 */
+    val suppressBubbleCoveredSlots: Boolean = false,
     /** 点击转发接管（默认 null = 对条目视图 [View.performClick]）。条目自身无点击监听器
      *  /监听器链被应用侧机制架空的应用（如小红书：生效监听在祖先容器，参考 LiquidTab
      *  XhsNavigationState.performTap 的穿透式点击），适配器提供自己的派发逻辑，参数
