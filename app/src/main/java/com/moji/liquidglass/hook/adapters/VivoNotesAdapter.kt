@@ -112,12 +112,9 @@ object VivoNotesAdapter : AppAdapter {
             }
         },
         // 关闭液泡折射副本的整层强调色染色：条目自带配色（多色 Lottie 动画 + title 纯色），
-        // 染色会把折射副本盖成单色剪影
+        // 染色会把折射副本盖成单色剪影。suppressBubbleCoveredSlots 不声明（默认关）：
+        // alpha 硬切抑制在真机上随液泡运动引发图标消失/闪烁（§8.7 教训 4 回退记录）
         tintRefractionContent = false,
-        // 液泡覆盖槽位抑制：未染色 + 多色动画图标会让"可见槽位镜像 × 液泡折射副本"并存
-        // 显形为两份错位重影——被液泡覆盖的可见槽位不绘制，泡内折射副本成为唯一图标来源
-        // （§1.2；默认关，其余应用渲染逐位不变，§0.4 红线）
-        suppressBubbleCoveredSlots = true,
     )
 
     override fun shouldProbe(activity: Activity): Boolean =

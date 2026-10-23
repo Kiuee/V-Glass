@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -69,6 +71,11 @@ import kotlin.math.sign
  * 该点击不会到达 LiquidBottomTab，由宿主转发实现原生"再点一次已选中 tab"行为）；
  * 新增 tintRefractionContent（折射副本层是否整层强调色 tint：LOTTIE_RESOLVE 与 WHOLE_TAB
  * 两模式均开启——选中/悬停 tab 在液泡内呈强调色，观感全局一致）。
+ * 偏离上游 1:1（2026-10-23）：折射副本行（第二行 Row）四周外扩 2×blurRadius（required*
+ * 尺寸，无视父约束——width/height 会被父 max 收敛致外扩失效）、内容区经 padding 锁回
+ * 原几何——上游结构里折射副本行与液泡 bounds 完全重合，ClippedViewBackdrop 的消费者
+ * 自裁剪 + blur 边界淡出把"近透明带"搬进了胶囊/液泡的可见内部（选中态胶囊背景顶部
+ * 透明根因，详见 MAINTENANCE.md §1.2 液泡折射源外扩）。
  */
 @Composable
 fun LiquidBottomTabs(
@@ -97,6 +104,14 @@ fun LiquidBottomTabs(
         else Color(0xFF121212).copy(0.4f)
 
     val tabsBackdrop = rememberLayerBackdrop()
+
+    // 折射副本行四周外扩量 = 2×模糊半径：ClippedViewBackdrop 把每个消费者的采样裁剪到
+    // 自身胶囊形（防矩形采样色带），blur 的高斯混合在裁剪边界内侧产生 ~1-2 个模糊半径的
+    // 淡出带——折射副本行原 bounds 与液泡/胶囊完全重合（同为 barHeight−8dp 居中），胶囊
+    // 顶边正好压在淡出带上（顶部磨砂近透明、原始内容透出）。外扩后淡出带落在胶囊采样区
+    // 之外；同时 ≥ 液泡 lens 最大外向位移（refractionAmount = 14dp·progress），按压/拖动
+    // 时边缘不再取样到空环。内容区经 padding 锁回原几何（见下方折射副本行）。
+    val refractionCopyOverdraw = blurRadius * 2f
 
     BoxWithConstraints(
         modifier,
@@ -262,6 +277,7 @@ fun LiquidBottomTabs(
         ) {
             Row(
                 Modifier
+                    .align(Alignment.Center)
                     .clearAndSetSemantics {}
                     .alpha(0f)
                     .layerBackdrop(tabsBackdrop)
@@ -287,9 +303,14 @@ fun LiquidBottomTabs(
                         onDrawSurface = { drawRect(containerColor) }
                     )
                     .then(interactiveHighlight.modifier)
-                    .height(barHeight - 8f.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 4f.dp)
+                    // 外扩尺寸 + 补偿 padding：磨砂录制区超出液泡采样范围，内容区（图标/
+                    // 标签/clickable）锁回原几何 barWidth−8dp × barHeight−8dp 原位居中。
+                    // 必须用 required*：width/height 是优先尺寸（enforceIncoming），会被
+                    // 父容器 max 约束收敛（父 Box 按 barWidth 定宽）——外扩静默失效而补偿
+                    // padding 照常生效，内容区被挤偏/变窄（2026-10-23 真机回归根因）
+                    .requiredHeight(barHeight - 8f.dp + refractionCopyOverdraw * 2)
+                    .requiredWidth(maxWidth + refractionCopyOverdraw * 2)
+                    .padding(horizontal = 4f.dp + refractionCopyOverdraw, vertical = refractionCopyOverdraw)
                     .graphicsLayer(
                         colorFilter = if (tintRefractionContent) {
                             ColorFilter.tint(resolvedAccentColor)

@@ -13,11 +13,11 @@ data class GlassStyle(
     /** 两侧水平边距（dp）：玻璃胶囊不再顶到屏幕边缘。 */
     /** 玻璃栏最小安全边距（dp）：实际边距 = max(推导边距, 此值)，
      *  tab 少时栏收窄为内容宽居中，边距自动放大但不低于此下限。 */
-    val minHorizontalMarginDp: Float = 16f,
+    val minHorizontalMarginDp: Float = 20f,
     /** 小白条上方的额外间隙（dp），叠加在导航栏 inset 之上。 */
     val bottomGapDp: Float = 0f,
     /** 栏高（dp），内容行 = 栏高 - 8dp。 */
-    val barHeightDp: Float = 64f,
+    val barHeightDp: Float = 60f,
     /** 折射模糊半径（dp）。 */
     val blurRadiusDp: Float = 8f,
     /** 是否显示 tab 文字标签。 */
