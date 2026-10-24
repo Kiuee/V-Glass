@@ -121,6 +121,20 @@ class GlassSession(
     @Volatile
     var mirrorVisibleGate: (() -> Boolean)? = null
 
+    // —— 辅助玻璃视图（声明式通道，默认 null = 其余应用零影响）——
+    // 应用内除底栏外需要"同款玻璃底"的视图（如文件管理文件页的存储状态条
+    // space_situation）：原生视图由适配器压制（alpha=0 + 背景置空 + 宽度包裹内容），
+    // 引擎逐帧镜像内容 + 绘制同款玻璃胶囊（采样同源、样式参数取自 GlassStyle）。
+    /** 辅助玻璃视图提供者（帧循环每 tick 调用，返回当前有效的视图列表；空/null = 不渲染）。
+     *  压制（alpha/背景/宽度）由适配器负责（应用专属知识），引擎只负责镜像与玻璃绘制。 */
+    @Volatile
+    var auxGlassViews: (() -> List<View>)? = null
+
+    /** 辅助玻璃还原回调（restore() 尾部调用）：适配器恢复压制视图的原 alpha/背景/宽度
+     *  与分割线等一次性显隐修改。 */
+    @Volatile
+    var onAuxGlassRestore: (() -> Unit)? = null
+
     /** 背景采样去重（重内容页优化，适配器按配置打开）：true 时 ClippedViewBackdrop 每
      *  tick 只把内容条带录制一次（RenderNode），三个玻璃节点回放同一录制——相册照片
      *  网格为 GL 渲染，采样即触发 GL 绘制，3 次/帧 → 1 次/帧。false 保持各自直绘
@@ -223,6 +237,15 @@ class GlassSession(
      *  整段跳过。由适配器按应用注入（vivo 官网：底栏内部 item 状态表反射）。 */
     @Volatile
     var previewIconLottie: ((index: Int) -> Any?)? = null
+
+    /** 预览图标换图钩子（默认 null = 其余应用零影响）：WHOLE_TAB 条目的图标为"随选中
+     *  态换图"的双 drawable 应用（如文件管理 discolor 图标：选中 = 品牌色 drawable、
+     *  非选中 = 灰色 drawable，换图由应用自身选择路径 H()/r() 驱动、setChecked 不换图）
+     *  在适配器提供此闭包，setTabChecked 每次翻转后调用——拖动预览期间悬停 tab 换上
+     *  选中态 drawable、被拖离的原选中换回非选中态（与商店"气泡内图标 = 换图后选中态
+     *  资源的染色副本"机制对齐，否则气泡里是非选中细轮廓的染色，观感浅于强调色）。 */
+    @Volatile
+    var previewIconSwapper: ((index: Int, checked: Boolean) -> Unit)? = null
 
     /** 帧驱动钩子：对 [previewIconLottie] 返回的 drawable 驱动到指定进度（0=首帧，
      *  1=末帧）。未注入时回退反射 `setProgress`（Lottie 方法未被混淆的应用，如商店）；
@@ -565,17 +588,20 @@ class GlassSession(
     /** 翻转 WHOLE_TAB 条目的 checked 态：VNavMenuItem.setChecked 驱动图标选中外观与标签
      *  显隐（内部调 setSelected），与应用自身切页同路径，无监听器副作用。best-effort。
      *  描述符声明了 itemCheckedApplier 时（条目选中外观由"数据模型 + setData 重渲染"
-     *  驱动、视图上无 void(boolean) 翻转方法，如高德地图）走直控通道。 */
+     *  驱动、视图上无 void(boolean) 翻转方法，如高德地图）走直控通道。翻转后调用
+     *  [previewIconSwapper]（图标随选中态换图的应用，如文件管理 discolor 双 drawable）。 */
     private fun setTabChecked(index: Int, checked: Boolean) {
         val view = tabViews.getOrNull(index) ?: return
         extractor.descriptor.itemCheckedApplier?.let { applier ->
             runCatching { applier(view, checked) }
                 .onFailure { logger?.invoke("itemCheckedApplier($index,$checked) failed: $it") }
+            runCatching { previewIconSwapper?.invoke(index, checked) }
             return
         }
         val method = wholeTabSetChecked ?: return
         runCatching { method.invoke(view, checked) }
             .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }
+        runCatching { previewIconSwapper?.invoke(index, checked) }
     }
 
     private fun setLottieProgress(lottie: Any, progress: Float) {
@@ -646,6 +672,10 @@ class GlassSession(
 
     /** 还原：移除 ComposeView 覆盖层、恢复底栏可见性/透明度/可点击（内容视图从未被移动）。主线程调用。 */
     fun restore() {
+        try {
+            onAuxGlassRestore?.invoke()
+        } catch (_: Throwable) {
+        }
         try {
             (composeView as? androidx.compose.ui.platform.ComposeView)?.disposeComposition()
         } catch (_: Throwable) {

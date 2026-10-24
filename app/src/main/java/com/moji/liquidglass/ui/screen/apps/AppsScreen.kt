@@ -56,8 +56,9 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
     val noteGallery = stringResource(R.string.app_note_gallery)
     val noteAmap = stringResource(R.string.app_note_amap)
     val noteXhs = stringResource(R.string.app_note_xhs)
+    val noteFileManager = stringResource(R.string.app_note_filemanager)
     val context = LocalContext.current
-    return remember(noteStore, noteGallery, noteAmap, noteXhs, context) {
+    return remember(noteStore, noteGallery, noteAmap, noteXhs, noteFileManager, context) {
         val pm = context.packageManager
         AdapterRegistry.all.map { adapter ->
             val pkg = adapter.targetPackage
@@ -79,6 +80,7 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
                     "com.vivo.gallery" -> noteGallery
                     "com.autonavi.minimap" -> noteAmap
                     "com.xingin.xhs" -> noteXhs
+                    "com.android.filemanager" -> noteFileManager
                     else -> ""
                 },
                 installedVersion = installedVersion,

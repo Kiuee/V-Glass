@@ -10,5 +10,6 @@
         <item>com.autonavi.minimap</item>
         <item>com.xingin.xhs</item>
         <item>com.android.notes</item>
+        <item>com.android.filemanager</item>
     </string-array>
 </resources>

@@ -41,6 +41,7 @@
     <string name="app_note_gallery">GL 内容页采样与多选模式自动隐藏</string>
     <string name="app_note_amap">悬浮胶囊底栏整条目镜像适配</string>
     <string name="app_note_xhs">图文流整条目镜像适配</string>
+    <string name="app_note_filemanager">originui 条目镜像与搜索态自动隐藏</string>
     <string name="apps_note">关闭应用开关后重启对应应用还原</string>
     <string name="app_adapted">已适配</string>
     <string name="app_not_adapted">未适配</string>

@@ -47,10 +47,16 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
+import com.kyant.backdrop.effects.lens
+import com.kyant.shapes.Capsule
 import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
@@ -110,6 +116,9 @@ fun GlassRoot(
     var selectedIndex by remember { mutableIntStateOf(spec.initialIndex) }
     // 底栏显隐跟随原生页面：false = 应用声明当前页不显示底栏（如大图详情页二级界面）
     var barWanted by remember { mutableStateOf(true) }
+    // 辅助玻璃视图边界（auxGlassViews 声明式通道，帧循环逐 tick 读取；仅变化时写入
+    // → 静止零重组。偏移相对 ComposeView 原点，px）
+    var auxBounds by remember { mutableStateOf(emptyList<AuxGlassBounds>()) }
     // 应用配色（可延迟补取热替换）：装配可能早于应用应用主题色（清除后台后的暖启动
     // 等加载态，取到缺省选择器），帧循环低频补取直到拿到真实配色
     var specColors by remember(spec) { mutableStateOf(spec.contentColor to spec.accentColor) }
@@ -141,9 +150,13 @@ fun GlassRoot(
                 null
             } else {
                 object : android.text.TextWatcher {
+                    private val labelOverrides = session.extractor.descriptor.labelOverrides
+
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        s?.toString()?.takeIf { it.isNotBlank() }?.let { labelTexts[index] = it }
+                        s?.toString()?.takeIf { it.isNotBlank() }?.let { text ->
+                            labelTexts[index] = labelOverrides[text] ?: text
+                        }
                     }
 
                     override fun afterTextChanged(s: android.text.Editable?) {}
@@ -239,6 +252,20 @@ fun GlassRoot(
                 val wanted = gate()
                 if (wanted != barWanted) barWanted = wanted
             }
+            // 辅助玻璃视图边界：逐 tick 读取各视图屏幕坐标与 isShown（视图被应用隐藏/
+            // 移动时胶囊同步跟随），仅变化时写入 state
+            session.auxGlassViews?.let { provider ->
+                val views = runCatching { provider() }.getOrNull().orEmpty()
+                val origin = IntArray(2)
+                session.composeView.getLocationOnScreen(origin)
+                val list = views.mapNotNull { v ->
+                    if (!v.isShown || v.width <= 0 || v.height <= 0) return@mapNotNull null
+                    val loc = IntArray(2)
+                    v.getLocationOnScreen(loc)
+                    AuxGlassBounds(loc[0] - origin[0], loc[1] - origin[1], v.width, v.height, v)
+                }
+                if (list != auxBounds) auxBounds = list
+            }
             val appSelected = session.selectedTabIndex()
             if (appSelected >= 0 && appSelected != selectedIndex) {
                 selectedIndex = appSelected
@@ -272,6 +299,14 @@ fun GlassRoot(
         if (appIsDark) Color.Black else Color.White
     }
 
+    Box(Modifier.fillMaxWidth()) {
+        // 辅助玻璃视图层（声明式通道：auxGlassViews 未注入 = auxBounds 恒空，渲染零影响）。
+        // 放在外层 Box：坐标相对 ComposeView 原点（内层 BoxWithConstraints 有 48dp 顶部
+        // padding，会引入坐标偏移）。胶囊可位于 overlay 布局边界之外（不裁剪、无点击
+        // 消费——触摸穿透到被压制的原生视图，保留应用自身的点击行为）。
+        auxBounds.forEach { bounds ->
+            AuxGlassPill(bounds, backdrop, style, tick)
+        }
     BoxWithConstraints(
         Modifier
             .fillMaxWidth()
@@ -351,7 +386,14 @@ fun GlassRoot(
                         // 预览激活时 selectedIndex 冻结为原 tab（防读数污染），故仅悬停
                         // tab 吃强调色、原 tab 回内容色（即"原 tab 变回未选中"的视觉）。
                         val previewIndex = LocalTabPreviewIndex.current.value
-                        val accentColor = specColors.second ?: contentColor
+                        // 标签强调色：描述符声明回退时（强调色缺失或与内容色相同——原生
+                        // 选中态不靠颜色表达的应用，如文件管理），回退到液泡折射染色的
+                        // 强调色，与气泡观感一致（§9.2）；否则维持现状。
+                        val accentColor = if (session.extractor.descriptor.labelAccentFallbackToBubble) {
+                            specColors.second?.takeIf { it != specColors.first } ?: bubbleAccent(isLightTheme)
+                        } else {
+                            specColors.second ?: contentColor
+                        }
                         fun labelColor(index: Int) =
                             if (index == previewIndex || (previewIndex == -1 && index == selectedIndex)) {
                                 accentColor
@@ -504,9 +546,68 @@ fun GlassRoot(
             }
         }
     }
+    }
 }
 
 private val accentBadge = Color(0xFFEB5545)
+
+/** 液泡折射染色默认强调色（与 LiquidBottomTabs.resolvedAccentColor 同源）：标签强调色
+ *  回退（labelAccentFallbackToBubble）时使用，保证标签与气泡观感一致。 */
+private fun bubbleAccent(isLightTheme: Boolean): Color =
+    if (isLightTheme) Color(0xFF0088FF) else Color(0xFF0091FF)
+
+/** 辅助玻璃视图的逐帧边界快照（偏移相对 ComposeView 原点，px）。 */
+private data class AuxGlassBounds(
+    val offsetX: Int,
+    val offsetY: Int,
+    val widthPx: Int,
+    val heightPx: Int,
+    val view: View,
+)
+
+/**
+ * 辅助玻璃胶囊（auxGlassViews 声明式通道）：与玻璃底栏同款的玻璃底（同采样源、同
+ * GlassStyle 参数、同 Capsule 形态），内容 = 原生视图 1:1 逐帧镜像（原生视图已被
+ * 适配器压制：alpha=0 + 背景置空——`View.draw()` 手动调用不施加 alpha，镜像取到
+ * 完整内容且无鬼影；点击不被胶囊消费，穿透到原生视图）。样式随玻璃栏样式页热生效。
+ */
+@Composable
+private fun AuxGlassPill(
+    bounds: AuxGlassBounds,
+    backdrop: com.kyant.backdrop.Backdrop,
+    style: GlassStyle,
+    tick: IntState,
+) {
+    val isLightTheme = !isSystemInDarkTheme()
+    val containerColor =
+        if (isLightTheme) Color(0xFFFAFAFA).copy(alpha = style.surfaceAlpha)
+        else Color(0xFF121212).copy(alpha = style.surfaceAlpha)
+    val density = LocalDensity.current
+    val mirrorPainter = remember(bounds.view) { LiveViewPainter(bounds.view, tick) }
+    Box(
+        Modifier
+            .offset { IntOffset(bounds.offsetX, bounds.offsetY) }
+            .size(
+                with(density) { bounds.widthPx.toDp() },
+                with(density) { bounds.heightPx.toDp() },
+            )
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { Capsule() },
+                effects = {
+                    colorControls(saturation = style.saturation)
+                    blur(style.blurRadiusDp.dp.toPx())
+                    lens(
+                        24f.dp.toPx() * style.refractionScale,
+                        24f.dp.toPx() * style.refractionScale,
+                    )
+                },
+                onDrawSurface = { drawRect(containerColor) }
+            )
+    ) {
+        Box(Modifier.fillMaxSize().paint(mirrorPainter))
+    }
+}
 
 /** 单个 tab 的舒适宽度上限（dp）：栏宽 = min(可用宽 − 2×最小安全边距, tab 数 × 此值 + 8dp)，
  *  tab 少时栏收窄为内容宽居中；tab 多且未达上限时铺满可用宽。 */

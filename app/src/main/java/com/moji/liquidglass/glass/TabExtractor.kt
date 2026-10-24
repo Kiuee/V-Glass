@@ -72,6 +72,16 @@ data class TabBarDescriptor(
      *  (槽位下标, 条目视图列表, 底栏容器)。实现须与原生点击同语义（切页/回顶）；拖动
      *  预览的选中翻转仍走 itemChecked* 通道，不受本字段影响。 */
     val tabClickHandler: ((slotIndex: Int, tabViews: List<View>, tabContainer: View) -> Unit)? = null,
+    /** 玻璃栏标签文本覆盖（原生标签文本 → 显示文本，默认空 = 原样）。标签过长等场景的
+     *  适配级精简，仅作用于玻璃栏自绘标签（提取与 TextWatcher 跟随双处生效）；原生底栏
+     *  隐形不受影响。 */
+    val labelOverrides: Map<String, String> = emptyMap(),
+    /** 标签悬停/选中强调色回退（默认 false = 强调色缺失时回退内容色，无可见切换）。
+     *  原生选中态**不靠颜色表达**的应用（如文件管理：标签色为纯色非选择器，选中态 =
+     *  标签缩放）取色得到 强调色==内容色/缺失 → 悬停切换在视觉上不存在。true 时标签
+     *  强调色回退到液泡折射染色的强调色（引擎默认蓝，GlassRoot.bubbleAccent），与气泡
+     *  观感一致，符合 §1.2 悬停语义（悬停 tab = 强调色、原选中 = 内容色）。 */
+    val labelAccentFallbackToBubble: Boolean = false,
 )
 
 /**
@@ -139,7 +149,8 @@ class TabExtractor(val descriptor: TabBarDescriptor) {
         val tabs = tabViews.map { view ->
             val iconElement = if (full) view else iconId?.let { view.findViewByIdByName(it) }
             val labels = if (full) null else labelsId?.let { view.findViewByIdByName(it) }
-            val title = labels?.let(::visibleLabelText) ?: ""
+            val title = labels?.let(::visibleLabelText)
+                ?.let { descriptor.labelOverrides[it] ?: it } ?: ""
             if (contentColor == null) {
                 val (content, accent) = extractTextColors(firstTextView(labels))
                 contentColor = content
