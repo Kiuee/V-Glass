@@ -6,6 +6,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
 import com.moji.liquidglass.config.ModuleConfig
 import com.moji.liquidglass.glass.GlassSession
 import com.moji.liquidglass.glass.IconMode
@@ -90,6 +92,11 @@ object FileManagerAdapter : AppAdapter {
     private var spaceOriginalBackground: Drawable? = null
     private var spaceOriginalWidth = ViewGroup.LayoutParams.MATCH_PARENT
     private var spaceOriginalGravity = -1
+    private var spaceOriginalPaddingL = 0
+    private var spaceOriginalPaddingR = 0
+
+    /** 玻璃底加宽量（每侧 dp）：减小玻璃底距屏幕两侧的距离（用户观感调整项）。 */
+    private const val AUX_EXTRA_HORIZONTAL_DP = 24f
     @Volatile private var spaceSituationId = 0
 
     private fun isBottomBar(v: View): Boolean =
@@ -221,8 +228,43 @@ object FileManagerAdapter : AppAdapter {
      *  记录序 = tab 序。选中态 = 品牌色 drawable（filemanager_home_tab_color）、非选中
      *  态 = 灰色 drawable（main_bottom_icon_back）；l() 单 drawable 路径两者相同。 */
     private val tabIconPairs = ArrayList<Pair<Drawable?, Drawable?>>(4)
+    /** 符号系统重着色入口（混淆类 `pj.a` 单例，随版本漂移风险）：换图后必须调用，符号
+     *  系统按当前主题/checked 态给 drawable 重新着色——裸 setIcon 会留下构造时的浅色
+     *  资源色（深色背景下呈黑色）。原生配对：选中路径 `H()` = `r(drawable, 1.0f)`
+     *  （animProgress 直驱满进度）；回退路径 `r()` = `U(drawable)`（start() 状态动画）。
+     *  懒反射解析，失败 = null（降级为裸 setIcon）。 */
+    private class SymbolDriver(
+        val setProgress: (Drawable, Float) -> Unit,
+        val start: (Drawable) -> Unit,
+    )
+
+    @Volatile private var symbolDriver: SymbolDriver? = null
+    @Volatile private var symbolDriverResolved = false
+    @Volatile private var appClassLoader: ClassLoader? = null
+
+    /** 懒解析符号系统 `pj.a.e()` 单例的 `r(Object, float)` 与 `U(Object)`。 */
+    private fun resolveSymbolDriver(loader: ClassLoader?): SymbolDriver? {
+        symbolDriver?.let { return it }
+        if (symbolDriverResolved) return symbolDriver
+        symbolDriverResolved = true
+        if (loader == null) return null
+        val resolved = runCatching {
+            val cls = Class.forName("pj.a", true, loader)
+            val manager = cls.getMethod("e").apply { isAccessible = true }.invoke(null)
+            val r = cls.getMethod("r", Any::class.java, Float::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+            val u = cls.getMethod("U", Any::class.java).apply { isAccessible = true }
+            SymbolDriver(
+                setProgress = { d, f -> r.invoke(manager, d, f) },
+                start = { d -> u.invoke(manager, d) },
+            )
+        }.getOrNull()
+        symbolDriver = resolved
+        return resolved
+    }
 
     override fun installAppHooks(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader) {
+        appClassLoader = loader
         runCatching {
             val barClass = Class.forName(BAR_CLASS, true, loader)
             val addAnimated = barClass.getDeclaredMethod(
@@ -273,6 +315,8 @@ object FileManagerAdapter : AppAdapter {
         session.previewIconSwapper = { index, checked ->
             swapPreviewIcon(session, index, checked)
         }
+        // 玻璃底形状：圆角矩形（16dp）更贴近原生存储条形态（默认胶囊全圆角过于浑圆）
+        session.auxGlassShape = { androidx.compose.foundation.shape.RoundedCornerShape(16.dp) }
         // 可见性门控顺带逐帧重申装饰隐藏（防应用/theme 路径翻回可见性；两次可见性
         // 比较的开销可忽略）
         session.mirrorVisibleGate = {
@@ -423,8 +467,9 @@ object FileManagerAdapter : AppAdapter {
      *    画进玻璃胶囊；
      *  - alpha=0：原生内容隐藏但布局占位与点击保留（alpha 不影响输入，"清理"入口照常；
      *    `View.draw()` 手动调用不施加 alpha，引擎镜像仍取到完整内容，无鬼影）；
-     *  - 宽度 match_parent → wrap_content + 水平居中：胶囊包裹内容（用户要求的观感），
-     *    内边距沿用原生值（paddingHorizontal/12dp 垂直/minHeight 53dp）。 */
+     *  - 宽度 match_parent → wrap_content + 水平居中：玻璃底包裹内容（用户要求的观感），
+     *    并额外加对称水平 padding（[AUX_EXTRA_HORIZONTAL_DP]，减小玻璃底距屏幕两侧的
+     *    距离、内容保持居中），原 padding 记录供还原。 */
     private fun suppressSpaceView(view: View) {
         if (spaceSuppressedFor === view) return
         spaceSuppressedFor = view
@@ -432,6 +477,8 @@ object FileManagerAdapter : AppAdapter {
         spaceOriginalBackground = view.background
         spaceOriginalWidth = view.layoutParams?.width ?: ViewGroup.LayoutParams.MATCH_PARENT
         spaceOriginalGravity = (view.layoutParams as? LinearLayout.LayoutParams)?.gravity ?: -1
+        spaceOriginalPaddingL = view.paddingLeft
+        spaceOriginalPaddingR = view.paddingRight
         view.background = null
         view.alpha = 0f
         view.layoutParams?.let { lp ->
@@ -439,21 +486,36 @@ object FileManagerAdapter : AppAdapter {
             (lp as? LinearLayout.LayoutParams)?.let { it.gravity = Gravity.CENTER_HORIZONTAL }
             view.layoutParams = lp
         }
+        val extraPx = (AUX_EXTRA_HORIZONTAL_DP * view.resources.displayMetrics.density).toInt()
+        view.setPadding(
+            spaceOriginalPaddingL + extraPx,
+            view.paddingTop,
+            spaceOriginalPaddingR + extraPx,
+            view.paddingBottom,
+        )
     }
 
     /** 预览换图：按注册序取该 tab 的双 drawable，checked → 选中态（品牌色）、否则非
-     *  选中态（灰色）setIcon 到条目（与应用 H()/r() 同语义；setChecked 不换图）。双
-     *  drawable 相同（l() 单 drawable 路径）或未记录时跳过。 */
+     *  选中态（灰色）setIcon 到条目，并按方向复刻应用自身的符号系统配对调用——选中
+     *  路径 `H()` = `r(drawable, 1.0f)`（animProgress 直驱满进度）、回退路径 `r()` =
+     *  `U(drawable)`（start() 状态动画）。缺符号系统调用时 drawable 留构造时的浅色
+     *  资源色，深色背景呈黑色（无法按主题重着色）。双 drawable 相同（l() 单 drawable
+     *  路径）或未记录时跳过。 */
     private fun swapPreviewIcon(session: GlassSession, index: Int, checked: Boolean) {
         val pair = synchronized(tabIconPairs) { tabIconPairs.getOrNull(index) } ?: return
         val (selected, unselected) = pair
         if (selected == null || unselected == null || selected === unselected) return
         val item = session.tabViews.getOrNull(index) ?: return
+        val drawable = if (checked) selected else unselected
         runCatching {
             item.javaClass
                 .getMethod("setIcon", Drawable::class.java)
                 .apply { isAccessible = true }
-                .invoke(item, if (checked) selected else unselected)
+                .invoke(item, drawable)
+        }
+        val driver = resolveSymbolDriver(appClassLoader) ?: return
+        runCatching {
+            if (checked) driver.setProgress(drawable, 1.0f) else driver.start(drawable)
         }
     }
 
@@ -496,6 +558,7 @@ object FileManagerAdapter : AppAdapter {
                 }
                 v.layoutParams = lp
             }
+            v.setPadding(spaceOriginalPaddingL, v.paddingTop, spaceOriginalPaddingR, v.paddingBottom)
         }
         spaceSuppressedFor = null
         spaceViewRef = null

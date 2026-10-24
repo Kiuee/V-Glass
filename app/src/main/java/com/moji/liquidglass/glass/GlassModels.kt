@@ -135,6 +135,11 @@ class GlassSession(
     @Volatile
     var onAuxGlassRestore: (() -> Unit)? = null
 
+    /** 辅助玻璃形状钩子（默认 null = 胶囊 Capsule）：按视图声明玻璃底形状（如
+     *  文件管理存储条用圆角矩形更贴近原生形态）。 */
+    @Volatile
+    var auxGlassShape: ((View) -> androidx.compose.ui.graphics.Shape)? = null
+
     /** 背景采样去重（重内容页优化，适配器按配置打开）：true 时 ClippedViewBackdrop 每
      *  tick 只把内容条带录制一次（RenderNode），三个玻璃节点回放同一录制——相册照片
      *  网格为 GL 渲染，采样即触发 GL 绘制，3 次/帧 → 1 次/帧。false 保持各自直绘

@@ -312,7 +312,13 @@ fun GlassRoot(
         // padding，会引入坐标偏移）。胶囊可位于 overlay 布局边界之外（不裁剪、无点击
         // 消费——触摸穿透到被压制的原生视图，保留应用自身的点击行为）。
         auxBounds.forEach { bounds ->
-            AuxGlassPill(bounds, backdrop, style, tick)
+            AuxGlassPill(
+                bounds,
+                backdrop,
+                style,
+                tick,
+                shape = session.auxGlassShape?.invoke(bounds.view) ?: Capsule(),
+            )
         }
     BoxWithConstraints(
         Modifier
@@ -619,10 +625,11 @@ private data class AuxGlassBounds(
 )
 
 /**
- * 辅助玻璃胶囊（auxGlassViews 声明式通道）：与玻璃底栏同款的玻璃底（同采样源、同
- * GlassStyle 参数、同 Capsule 形态），内容 = 原生视图 1:1 逐帧镜像（原生视图已被
- * 适配器压制：alpha=0 + 背景置空——`View.draw()` 手动调用不施加 alpha，镜像取到
- * 完整内容且无鬼影；点击不被胶囊消费，穿透到原生视图）。样式随玻璃栏样式页热生效。
+ * 辅助玻璃底（auxGlassViews 声明式通道）：与玻璃底栏同款的玻璃底（同采样源、同
+ * GlassStyle 参数），形状按 `session.auxGlassShape` 声明（默认胶囊 Capsule），内容 =
+ * 原生视图 1:1 逐帧镜像（原生视图已被适配器压制：alpha=0 + 背景置空——`View.draw()`
+ * 手动调用不施加 alpha，镜像取到完整内容且无鬼影；点击不被玻璃底消费，穿透到原生
+ * 视图）。样式随玻璃栏样式页热生效。
  */
 @Composable
 private fun AuxGlassPill(
@@ -630,6 +637,7 @@ private fun AuxGlassPill(
     backdrop: com.kyant.backdrop.Backdrop,
     style: GlassStyle,
     tick: IntState,
+    shape: androidx.compose.ui.graphics.Shape,
 ) {
     val isLightTheme = !isSystemInDarkTheme()
     val containerColor =
@@ -646,7 +654,7 @@ private fun AuxGlassPill(
             )
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { Capsule() },
+                shape = { shape },
                 effects = {
                     colorControls(saturation = style.saturation)
                     blur(style.blurRadiusDp.dp.toPx())
