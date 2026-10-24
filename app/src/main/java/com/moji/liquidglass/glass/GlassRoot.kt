@@ -78,7 +78,8 @@ import kotlin.math.roundToInt
  * 多目标：渲染由 GlassBarSpec（适配器提取）驱动——
  * - LOTTIE_RESOLVE（商店）：每帧解析可见 Lottie 图标 + Compose 标签 + 角标覆盖层，
  *   液泡折射副本整层强调色 tint（选中 tab 呈强调色）；
- * - WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）+ 统一标签绘制，
+ * - WHOLE_TAB（相册）：图标元素镜像 + 统一标签绘制，条目 foreground 角标走顶层覆盖层
+ *   （overlayContent，浮在液泡之上、随玻璃表面按压缩放/平移），
  *   折射副本同样整层强调色 tint（与商店观感一致，强调色取自应用标签选择器）；
  *   mirrorVisibleGate 跟随原生页面隐藏整条玻璃栏。
  */
@@ -443,8 +444,10 @@ fun GlassRoot(
                                             Box(Modifier.fillMaxSize().paint(fullPainter))
                                         }
                                     } else {
-                                        // WHOLE_TAB（相册）：图标元素镜像（原生配色 + ViewOverlay 角标）
-                                        // + 统一标签绘制——观感与商店同构
+                                        // WHOLE_TAB（相册）：图标元素镜像（原生配色）+ 统一标签绘制
+                                        // ——观感与商店同构；角标（条目 foreground）走顶层覆盖层，
+                                        // 不进内容层（内容层是液泡折射副本的采样源，角标会被液泡
+                                        // 折射着色/盖住，见 overlayContent）
                                         val iconView = tab.iconView
                                         if (iconView != null) {
                                             val iconPainter = remember(iconView) {
@@ -495,9 +498,13 @@ fun GlassRoot(
                         }
                     },
                     overlayContent = {
-                        spec.tabs.forEachIndexed { _, tab ->
-                            // WHOLE_TAB 模式：角标/标签内嵌在整视图镜像里，无需覆盖层
-                            if (tab.mirrorWholeTab) return@forEachIndexed
+                        spec.tabs.forEachIndexed { index, tab ->
+                            // WHOLE_TAB_FULL：角标内嵌在整条目镜像里（条目 draw 自含前景），无需覆盖层
+                            if (tab.mirrorWholeTab &&
+                                session.extractor.descriptor.iconMode == IconMode.WHOLE_TAB_FULL
+                            ) {
+                                return@forEachIndexed
+                            }
                             Column(
                                 Modifier
                                     .fillMaxHeight()
@@ -506,39 +513,61 @@ fun GlassRoot(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Box(Modifier.size(28.dp)) {
-                                    val badgeView = tab.badgeView
-                                    val badgePainter = remember(badgeView) {
-                                        badgeView?.let { LiveViewPainter(it, tick) }
-                                    }
-                                    if (badgePainter != null && badgeView != null) {
-                                        Box(
-                                            Modifier
-                                                .align(Alignment.TopEnd)
-                                                .offset(x = (-2).dp, y = (-2).dp)
-                                                .size(
-                                                    with(density) { badgeView.width.toDp() },
-                                                    with(density) { badgeView.height.toDp() },
+                                    if (tab.mirrorWholeTab) {
+                                        // WHOLE_TAB 元素级角标（条目 foreground）顶层覆盖：与内容层
+                                        // 图标镜像盒同几何（28dp 居中 24dp 盒），ItemForegroundPainter
+                                        // 按 icon 在条目内的相对几何把条目 foreground 映射到盒内——
+                                        // 浮在液泡之上原色直出、随玻璃表面按压缩放/弹性平移
+                                        // （与商店角标覆盖层同通道，不进折射副本层）
+                                        val tabView = tab.tabView
+                                        val iconView = tab.iconView
+                                        if (tabView != null && iconView != null) {
+                                            val foregroundPainter = remember(tabView, iconView) {
+                                                ItemForegroundPainter(
+                                                    tabView,
+                                                    iconView,
+                                                    tick,
+                                                    with(density) { ITEM_BADGE_SINK_DP.toPx() },
                                                 )
-                                                .paint(badgePainter)
-                                        )
-                                    } else if (tab.badgeText != null) {
-                                        BasicText(
-                                            tab.badgeText,
-                                            Modifier
-                                                .align(Alignment.TopEnd)
-                                                .offset(x = (-2).dp, y = (-2).dp)
-                                                .background(accentBadge, RoundedCornerShape(50))
-                                                .padding(horizontal = 4.dp, vertical = 1.dp),
-                                            style = TextStyle(Color.White, 9.sp)
-                                        )
-                                    } else if (tab.badgeDot) {
-                                        Box(
-                                            Modifier
-                                                .align(Alignment.TopEnd)
-                                                .offset(x = (-2).dp, y = (-2).dp)
-                                                .size(8.dp)
-                                                .background(accentBadge, CircleShape)
-                                        )
+                                            }
+                                            Box(Modifier.size(24.dp).paint(foregroundPainter))
+                                        }
+                                    } else {
+                                        // LOTTIE_RESOLVE（商店）：镜像角标 > 文本 > 红点三分支
+                                        val badgeView = tab.badgeView
+                                        val badgePainter = remember(badgeView) {
+                                            badgeView?.let { LiveViewPainter(it, tick) }
+                                        }
+                                        if (badgePainter != null && badgeView != null) {
+                                            Box(
+                                                Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .offset(x = (-2).dp, y = (-2).dp)
+                                                    .size(
+                                                        with(density) { badgeView.width.toDp() },
+                                                        with(density) { badgeView.height.toDp() },
+                                                    )
+                                                    .paint(badgePainter)
+                                            )
+                                        } else if (tab.badgeText != null) {
+                                            BasicText(
+                                                tab.badgeText,
+                                                Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .offset(x = (-2).dp, y = (-2).dp)
+                                                    .background(accentBadge, RoundedCornerShape(50))
+                                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                                                style = TextStyle(Color.White, 9.sp)
+                                            )
+                                        } else if (tab.badgeDot) {
+                                            Box(
+                                                Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .offset(x = (-2).dp, y = (-2).dp)
+                                                    .size(8.dp)
+                                                    .background(accentBadge, CircleShape)
+                                            )
+                                        }
                                     }
                                 }
                                 if (style.showLabels) {
@@ -556,6 +585,11 @@ fun GlassRoot(
 }
 
 private val accentBadge = Color(0xFFEB5545)
+
+/** WHOLE_TAB 条目角标（条目 foreground 镜像）的整体下沉量：原生条目图标上方留白比
+ *  玻璃栏大（图标盒距栏顶 ~3dp vs 原生符号 marginTop ~10dp），严格按"相对图标原生
+ *  位置"锚定会把 TOP_END 悬出量顶出胶囊上缘（真机反馈"有点超出底栏"），下沉收回栏内。 */
+private val ITEM_BADGE_SINK_DP = 6.dp
 
 /** 液泡折射染色默认强调色（与 LiquidBottomTabs.resolvedAccentColor 同源）：标签强调色
  *  回退（labelAccentFallbackToBubble）时使用，保证标签与气泡观感一致。 */
@@ -678,6 +712,57 @@ private class LiveViewPainter(
         canvas.save()
         canvas.scale(size.width / vw, size.height / vh)
         view.draw(canvas)
+        canvas.restore()
+    }
+}
+
+/**
+ * WHOLE_TAB 条目 foreground 镜像 Painter（角标通道，顶层覆盖层渲染）：originui 族
+ * 底栏（主题/相册/官网/文件管理）的角标 VBadgeDrawable 经 setBadge 挂在**条目视图的
+ * foreground**（updateBadgeCoordinates(iconView, item) 把条目设为 customBadgeParent →
+ * 条目 setForeground(badge)；挂图标 ViewOverlay 的路径在无 customBadgeParent 时才走）——
+ * 角标不在 icon/labels 元素子树内，元素级镜像取不到。foreground 的坐标系是条目本地
+ * 坐标，这里按图标元素（anchor）在条目内的相对几何映射到 24dp 图标盒：先缩放
+ * （盒宽/图标宽，与 LiveViewPainter 图标镜像同缩放，角标尺寸随图标镜像一致），
+ * 再平移 -(icon 相对条目的偏移) 把图标原点映射到画布原点——角标按"相对图标的原生
+ * 位置"锚定（TOP_END 悬出图标边界的部分照常画出，Compose paint 不裁切）。
+ * [verticalShiftPx] 为整体下沉修正：原生条目图标上方留白比玻璃栏大（图标盒距栏顶
+ * ~3dp vs 原生符号 marginTop ~10dp），严格锚定会把 TOP_END 悬出量顶出胶囊上缘，
+ * 下沉几 dp 收回栏内（仍贴图标右上角）。外层再叠加画布平移（缩放前调用 = 设备
+ * 像素空间的最终位移）。
+ * 经 GlassRoot overlayContent 渲染在液泡之上（不进折射副本层），与玻璃栏 Row 同款
+ * 按压缩放 + panelOffset 平移（"贴在玻璃表面"，与商店角标覆盖层同通道）。
+ * 每帧动态读 foreground：角标可晚于装配 setBadge/清除（setBadge(null) 还原），
+ * 显隐/缩放动画经 drawable invalidate 流入，帧循环 tick 重绘时生效。
+ */
+private class ItemForegroundPainter(
+    private val item: View,
+    private val anchor: View,
+    private val tick: IntState,
+    private val verticalShiftPx: Float = 0f,
+) : Painter() {
+    override val intrinsicSize = Size.Unspecified
+
+    private val itemLoc = IntArray(2)
+    private val anchorLoc = IntArray(2)
+
+    override fun DrawScope.onDraw() {
+        tick.intValue
+        val foreground = item.foreground ?: return
+        if (!foreground.isVisible) return
+        val anchorWidth = anchor.width
+        if (anchorWidth <= 0 || anchor.height <= 0 || !anchor.isShown) return
+        item.getLocationOnScreen(itemLoc)
+        anchor.getLocationOnScreen(anchorLoc)
+        val canvas = drawContext.canvas.nativeCanvas
+        canvas.save()
+        // 下沉修正在最外层（缩放前）= 设备像素空间的最终位移
+        canvas.translate(0f, verticalShiftPx)
+        val scale = size.width / anchorWidth
+        canvas.scale(scale, scale)
+        // icon 相对条目的屏幕位移差 = 条目本地偏移（条目自身平移在两侧相消）
+        canvas.translate(-(anchorLoc[0] - itemLoc[0]).toFloat(), -(anchorLoc[1] - itemLoc[1]).toFloat())
+        foreground.draw(canvas)
         canvas.restore()
     }
 }

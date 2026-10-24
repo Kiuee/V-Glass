@@ -30,7 +30,10 @@ import java.lang.ref.WeakReference
  * - 图标：LottieDrawable（动态符号 tint"Fill 1"路径，选中 = *_IN json / 非选中 = *_OUT
  *   json）或静态 symbol drawable（低版本系统动态字体不可用/节日皮肤路径），`setIcon`
  *   挂到图标 ImageView（`vivo_navigation_bar_item_icon_view`），元素级直绘天然跟随；
- *   角标 VBadgeDrawable 挂图标 ImageView 的 ViewOverlay（引擎 overlayContent 通道承接）。
+ *   角标 VBadgeDrawable 挂**条目视图 foreground**（setBadge → updateBadgeCoordinates
+ *   把条目设为 customBadgeParent → setForeground(badge)，jadx 实证；挂图标 ViewOverlay
+ *   的路径仅在无 customBadgeParent 时走）——不在 icon/labels 元素子树内，由引擎
+ *   WHOLE_TAB 条目 foreground 镜像通道承接（GlassRoot.ItemForegroundPainter）。
  * - 选中机制（文件管理 discolor 同族，换图与翻转双通道分离）：`setChecked(boolean)` 纯
  *   视觉翻转（标签缩放/显隐，末尾 setSelected）；换图由应用选择路径
  *   `VBottomNavigationView.setItemSelected(int)`/`f(item)` 驱动——图标对存底栏 `B` 映射
