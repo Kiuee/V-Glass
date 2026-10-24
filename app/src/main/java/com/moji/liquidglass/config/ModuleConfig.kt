@@ -27,6 +27,13 @@ data class ModuleConfig(
     val barHeightDp: Float = 64f,
     /** 折射模糊半径（dp）。 */
     val barBlurDp: Float = 8f,
+    /** 玻璃表面色不透明度（0~1）：叠在模糊内容上的浅/深底色浓度，0 = 纯透明玻璃。
+     *  默认 0.4 与历史硬编码一致。 */
+    val barSurfaceAlpha: Float = 0.4f,
+    /** 色彩饱和度（vibrancy）：模糊内容的鲜艳度，默认 1.5 与历史硬编码一致（iOS 同款）。 */
+    val barSaturation: Float = 1.5f,
+    /** 折射强度：玻璃边缘与液泡折射位移的缩放系数，0 = 无折射平边。默认 1 与历史一致。 */
+    val barRefractionScale: Float = 1f,
     /** 是否显示 tab 文字标签。 */
     val barShowLabels: Boolean = true,
     /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
@@ -56,6 +63,9 @@ data class ModuleConfig(
         root.put("barBottomGapDp", barBottomGapDp.toDouble())
         root.put("barHeightDp", barHeightDp.toDouble())
         root.put("barBlurDp", barBlurDp.toDouble())
+        root.put("barSurfaceAlpha", barSurfaceAlpha.toDouble())
+        root.put("barSaturation", barSaturation.toDouble())
+        root.put("barRefractionScale", barRefractionScale.toDouble())
         root.put("barShowLabels", barShowLabels)
         root.put("lightweightSampling", lightweightSampling)
         root.put("glassRenderCapHz", glassRenderCapHz)
@@ -91,6 +101,9 @@ data class ModuleConfig(
                     barBottomGapDp = root.optDouble("barBottomGapDp", 0.0).toFloat(),
                     barHeightDp = root.optDouble("barHeightDp", 64.0).toFloat(),
                     barBlurDp = root.optDouble("barBlurDp", 8.0).toFloat(),
+                    barSurfaceAlpha = root.optDouble("barSurfaceAlpha", 0.4).toFloat(),
+                    barSaturation = root.optDouble("barSaturation", 1.5).toFloat(),
+                    barRefractionScale = root.optDouble("barRefractionScale", 1.0).toFloat(),
                     barShowLabels = root.optBoolean("barShowLabels", true),
                     lightweightSampling = root.optBoolean("lightweightSampling", true),
                     glassRenderCapHz = root.optInt("glassRenderCapHz", 0),

@@ -2,6 +2,7 @@
 
 package com.moji.liquidglass.ui.component.material
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -379,15 +380,16 @@ fun SegmentedInfoItem(
     )
 }
 
-/** 滑条条目：标题 + 当前值，拖动即时显示、松手提交（onCommit）。 */
+/** 滑条条目：标题 + 当前值，拖动即时显示、松手提交（onCommit）；数值文本可点击（onValueTextClick，如键盘输入）。 */
 @Composable
 fun SegmentedSliderItem(
     title: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    valueText: String,
+    valueText: (Float) -> String,
     colors: ListItemColors = defaultSegmentedColors(),
     enabled: Boolean = true,
+    onValueTextClick: (() -> Unit)? = null,
     onCommit: (Float) -> Unit,
 ) {
     var dragging by remember(value) { mutableStateOf(value) }
@@ -403,9 +405,14 @@ fun SegmentedSliderItem(
                 ) {
                     Text(title, style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        valueText,
+                        valueText(dragging),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colorScheme.outline,
+                        modifier = if (onValueTextClick != null && enabled) {
+                            Modifier.clickable { onValueTextClick() }
+                        } else {
+                            Modifier
+                        },
                     )
                 }
                 androidx.compose.material3.Slider(

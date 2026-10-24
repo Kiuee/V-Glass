@@ -20,6 +20,12 @@ data class GlassStyle(
     val barHeightDp: Float = 60f,
     /** 折射模糊半径（dp）。 */
     val blurRadiusDp: Float = 8f,
+    /** 玻璃表面色不透明度（0~1）：叠在模糊内容上的底色浓度，0 = 纯透明玻璃。 */
+    val surfaceAlpha: Float = 0.4f,
+    /** 色彩饱和度：模糊内容的鲜艳度（vibrancy），默认 1.5 = 历史硬编码。 */
+    val saturation: Float = 1.5f,
+    /** 折射强度：玻璃边缘与液泡折射位移的缩放系数，0 = 无折射平边。 */
+    val refractionScale: Float = 1f,
     /** 是否显示 tab 文字标签。 */
     val showLabels: Boolean = true,
 ) {
@@ -29,6 +35,9 @@ data class GlassStyle(
             bottomGapDp = config.barBottomGapDp,
             barHeightDp = config.barHeightDp,
             blurRadiusDp = config.barBlurDp,
+            surfaceAlpha = config.barSurfaceAlpha,
+            saturation = config.barSaturation,
+            refractionScale = config.barRefractionScale,
             showLabels = config.barShowLabels,
         )
     }

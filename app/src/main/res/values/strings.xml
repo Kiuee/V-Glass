@@ -61,7 +61,7 @@
     <string name="theme_settings">主题</string>
     <string name="theme_settings_summary">颜色模式、主色与调色板</string>
     <string name="bar_style">玻璃栏样式</string>
-    <string name="bar_style_summary">边距、间隙、栏高与模糊</string>
+    <string name="bar_style_summary">边距、间隙、栏高、模糊与折射</string>
     <string name="other_group">其他</string>
     <string name="about_page">关于</string>
     <string name="about_version_fmt">版本 %1$s</string>
@@ -106,9 +106,20 @@
     <!-- 玻璃栏样式页 -->
     <string name="bar_style_page">玻璃栏样式</string>
     <string name="bar_style_note">回到目标应用即生效（后台切换或重开）</string>
+    <string name="bar_section_appearance">玻璃底栏外观</string>
+    <string name="bar_section_blur">模糊效果</string>
     <string name="bar_margin">最小安全边距</string>
     <string name="bar_bottom_gap">底部间隙</string>
     <string name="bar_height">栏高</string>
+    <string name="bar_show_labels">显示文字标签</string>
     <string name="bar_blur">模糊半径</string>
+    <string name="bar_surface_alpha">表面色不透明度</string>
+    <string name="bar_saturation">色彩饱和度</string>
+    <string name="bar_refraction">折射强度</string>
     <string name="bar_value_dp_fmt">%1$d dp</string>
+    <string name="bar_value_pct_fmt">%1$d%%</string>
+    <string name="bar_value_times_fmt">%1$.2f×</string>
+    <string name="bar_value_edit_range">允许范围：%1$s ~ %2$s</string>
+    <string name="action_confirm">确定</string>
+    <string name="action_cancel">取消</string>
 </resources>

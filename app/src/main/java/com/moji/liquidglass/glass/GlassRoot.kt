@@ -285,15 +285,17 @@ fun GlassRoot(
         ).coerceAtLeast(0.dp)
         // 应用声明隐藏底栏时（大图详情等二级页面）整条玻璃栏不渲染（与原生一致，且零绘制成本）
         if (barWanted) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .width(barWidth)
-                    .padding(
-                        bottom = with(density) {
-                            effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp
-                        }
-                    )
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .width(barWidth)
+            .padding(
+                bottom = with(density) {
+                    // 底部间隙支持负值（玻璃栏下沉贴齐小白条本体，导航区域顶 = inset），
+                    // 总 padding 收敛非负防布局异常
+                    (effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp).coerceAtLeast(0.dp)
+                }
+            )
                     .graphicsLayer {
                         translationY = GlassBarState.translationY
                         // 重现弹性：与按压放大同公式（16dp/栏宽），appearProgress 脉冲驱动
@@ -320,6 +322,9 @@ fun GlassRoot(
                     tabsCount = spec.tabs.size,
                     barHeight = style.barHeightDp.dp,
                     blurRadius = style.blurRadiusDp.dp,
+                    surfaceAlpha = style.surfaceAlpha,
+                    saturation = style.saturation,
+                    refractionScale = style.refractionScale,
                     accentColor = specColors.second,
                     onPreviewTabChanged = {
                         session.previewTabChange(it)
