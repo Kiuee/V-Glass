@@ -82,6 +82,15 @@ data class TabBarDescriptor(
      *  强调色回退到液泡折射染色的强调色（引擎默认蓝，GlassRoot.bubbleAccent），与气泡
      *  观感一致，符合 §1.2 悬停语义（悬停 tab = 强调色、原选中 = 内容色）。 */
     val labelAccentFallbackToBubble: Boolean = false,
+    /** 单 tab 舒适宽度上限覆盖（dp，默认 null = 引擎全局 [GlassRoot] MAX_TAB_WIDTH_DP=70）。
+     *  tab 极少（2 tab）且原生条目远宽于 70dp 槽位的应用（如手机管家），全局公式收窄
+     *  的栏内图标/标签显拥挤，按应用声明更大值；null 时其余应用逐位不变（§0.4 红线）。 */
+    val maxTabWidthDp: Int? = null,
+    /** WHOLE_TAB 元素级镜像的图标盒尺寸覆盖（dp，默认 null = 24dp）。图标镜像把原生
+     *  图标视图 fit 缩放进盒内——原生图标视图非 24dp 的应用（如手机管家 ROM16 动态符号
+     *  32dp）被等比缩小，按应用声明原生尺寸 1:1 镜像；盒大于 28dp 预留时居中溢出
+     *  （内容层无裁剪，icon+标签总高仍在栏高内）；null 时其余应用逐位不变（§0.4 红线）。 */
+    val iconBoxDp: Int? = null,
 )
 
 /**

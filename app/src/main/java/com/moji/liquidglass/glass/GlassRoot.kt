@@ -320,10 +320,13 @@ fun GlassRoot(
             .padding(top = 48.dp)
     ) {
         // 栏宽 = min(可用宽 − 2×最小安全边距, tab 数 × 舒适宽度上限 + 8dp)：
-        // tab 多时铺满可用宽（与原行为一致），tab 少时收窄为内容宽、居中显示
+        // tab 多时铺满可用宽（与原行为一致），tab 少时收窄为内容宽、居中显示；
+        // 舒适宽度上限按 descriptor 覆盖（tab 极少且原生条目远宽于 70dp 槽位的应用，
+        // 默认 null = 全局值，其余应用逐位不变）
+        val maxTabWidthDp = session.extractor.descriptor.maxTabWidthDp ?: MAX_TAB_WIDTH_DP
         val barWidth = min(
             maxWidth - style.minHorizontalMarginDp.dp * 2,
-            (spec.tabs.size * MAX_TAB_WIDTH_DP + 8).dp
+            (spec.tabs.size * maxTabWidthDp + 8).dp
         ).coerceAtLeast(0.dp)
         // 应用声明隐藏底栏时（大图详情等二级页面）整条玻璃栏不渲染（与原生一致，且零绘制成本）
         if (barWanted) {
@@ -453,11 +456,16 @@ fun GlassRoot(
                                             val iconPainter = remember(iconView) {
                                                 LiveViewPainter(iconView, tick)
                                             }
+                                            // 图标镜像盒按 descriptor 覆盖（默认 24dp）：镜像把
+                                            // 原生图标视图 fit 缩放进盒内，原生图标视图非 24dp 的
+                                            // 应用（手机管家 ROM16 动态符号 32dp）按原尺寸声明避免
+                                            // 被等比缩小；盒大于 28dp 预留时居中溢出（内容层无裁剪）
+                                            val iconBox = (session.extractor.descriptor.iconBoxDp ?: 24).dp
                                             Box(
                                                 Modifier.size(28.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Box(Modifier.size(24.dp).paint(iconPainter))
+                                                Box(Modifier.size(iconBox).paint(iconPainter))
                                             }
                                         }
                                         if (style.showLabels) {
@@ -515,7 +523,8 @@ fun GlassRoot(
                                 Box(Modifier.size(28.dp)) {
                                     if (tab.mirrorWholeTab) {
                                         // WHOLE_TAB 元素级角标（条目 foreground）顶层覆盖：与内容层
-                                        // 图标镜像盒同几何（28dp 居中 24dp 盒），ItemForegroundPainter
+                                        // 图标镜像盒同几何（28dp 预留居中 iconBox 盒，iconBox 按
+                                        // descriptor 覆盖默认 24dp），ItemForegroundPainter
                                         // 按 icon 在条目内的相对几何把条目 foreground 映射到盒内——
                                         // 浮在液泡之上原色直出、随玻璃表面按压缩放/弹性平移
                                         // （与商店角标覆盖层同通道，不进折射副本层）
@@ -530,7 +539,11 @@ fun GlassRoot(
                                                     with(density) { ITEM_BADGE_SINK_DP.toPx() },
                                                 )
                                             }
-                                            Box(Modifier.size(24.dp).paint(foregroundPainter))
+                                            Box(
+                                                Modifier.size(
+                                                    (session.extractor.descriptor.iconBoxDp ?: 24).dp
+                                                ).paint(foregroundPainter)
+                                            )
                                         }
                                     } else {
                                         // LOTTIE_RESOLVE（商店）：镜像角标 > 文本 > 红点三分支
@@ -649,8 +662,9 @@ private fun AuxGlassPill(
     }
 }
 
-/** 单个 tab 的舒适宽度上限（dp）：栏宽 = min(可用宽 − 2×最小安全边距, tab 数 × 此值 + 8dp)，
- *  tab 少时栏收窄为内容宽居中；tab 多且未达上限时铺满可用宽。 */
+/** 单个 tab 的舒适宽度上限（dp，默认值）：栏宽 = min(可用宽 − 2×最小安全边距,
+ *  tab 数 × 此值 + 8dp)，tab 少时栏收窄为内容宽居中；tab 多且未达上限时铺满可用宽。
+ *  descriptor `maxTabWidthDp` 可按应用覆盖（手机管家 2 tab 先例）。 */
 private const val MAX_TAB_WIDTH_DP = 70
 
 /** 相册静止档 tick 间隔：内容/交互活动窗口结束后降 30fps 低频采样（~33ms）。
