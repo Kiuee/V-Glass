@@ -62,6 +62,9 @@ object TargetHook {
                 ) {
                     adapter.onTabActivityResumed(activity, facade, config)
                 }
+                // 回前台唤醒 backdrop：Surface 重建丢弃已录制的采样条带显示列表，
+                // 去重/冻结回放在重录制前为空（表现为"玻璃轮廓在、内容空"）
+                sessions[activity]?.invalidateBackdrop()
                 scheduleProbe(activity, adapter, facade, config)
             }
             null

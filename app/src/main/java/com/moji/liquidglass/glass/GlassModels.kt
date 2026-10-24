@@ -150,6 +150,34 @@ class GlassSession(
     @Volatile
     var glassRenderIntervalNs: Long = 0L
 
+    /** 采样冻结门控（声明式通道，默认 null = 其余应用零影响）：适配器注入，返回 true
+     *  时 backdrop 不对 appRoot 做逐帧外部 draw——**进入冻结时一次性录制**条带、冻结
+     *  期间纯回放，离开后自动恢复实时采样。外部高频 view.draw 会打乱部分自绘渲染树的
+     *  合成——WebView（Chromium）被外部重绘会间歇输出空白帧（整页闪白，vivo 主题 VIP
+     *  专区 H5 页实证）、GL 内容（相册）采样即触发 GL 绘制——适配器在含此类内容的页面
+     *  声明冻结，用定格快照换取零干扰。与采样去重（[dedupeBackdropSampling]）解耦：
+     *  非冻结页保持原直绘路径（去重回放跨 Surface 重建的显示列表会被 HWUI 丢弃，
+     *  表现为"玻璃轮廓在、内容空"——回放型采样必须配合 [invalidateBackdrop]）。冻结
+     *  录制失败/无录制产物时冻结帧不绘制（透明，极端降级）。每帧调用（draw 阶段），
+     *  闭包应自缓存、避免全树遍历热路径。 */
+    @Volatile
+    var backdropFreezeGate: (() -> Boolean)? = null
+
+    /** 强制重录制请求（[invalidateBackdrop] 置位，backdrop 消费后自动清除）：跨 Surface
+     *  重建（后台切换）会丢弃 bandNode 已录制的显示列表，去重/冻结回放在重录制前为空。
+     *  hook 层在 Activity onResume 时调用 [invalidateBackdrop]（主线程）。 */
+    @Volatile
+    var backdropForceRecord: Boolean = false
+
+    /** 回前台唤醒 backdrop：下一帧强制重录制采样条带一次（去重帧 = 多录一次；冻结帧 =
+     *  单次外部 draw 后继续纯回放）。 */
+    fun invalidateBackdrop() {
+        if (!backdropForceRecord) {
+            backdropForceRecord = true
+            logger?.invoke("backdrop invalidate (re-record after resume)")
+        }
+    }
+
     /** tick 事件驱动（适配器按内容重绘信号打开，如相册 GLRootView.onDraw hook）：
      *  true 时帧循环不再每帧无条件 tick——应用内容静止时零重绘（不烧 GPU、开发者
      *  选项的 Surface/视图/硬件层更新不再闪烁），内容重绘信号经 [onContentInvalidated]

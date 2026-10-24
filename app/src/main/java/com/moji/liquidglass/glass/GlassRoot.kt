@@ -103,6 +103,12 @@ fun GlassRoot(
                 Offset(out[0].toFloat(), out[1].toFloat())
             },
             dedupe = { session.dedupeBackdropSampling },
+            freeze = { session.backdropFreezeGate?.invoke() ?: false },
+            forceRecord = {
+                val flag = session.backdropForceRecord
+                if (flag) session.backdropForceRecord = false
+                flag
+            },
             log = { session.logger?.invoke(it) },
         )
     }

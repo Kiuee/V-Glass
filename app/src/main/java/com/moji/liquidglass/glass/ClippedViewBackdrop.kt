@@ -51,7 +51,18 @@ class ClippedViewBackdrop(
     private val viewPosition: () -> Offset,
     /** 采样去重开关（默认 { false } = 各自直绘，历史行为）。 */
     private val dedupe: () -> Boolean = { false },
-    /** 诊断日志出口（dedupe 开启时输出录制耗时/回退事件）。 */
+    /** 采样冻结门控（默认 { false } = 不冻结；声明式通道 backdropFreezeGate 经 GlassRoot
+     *  注入）。true = 不对 [view] 做逐帧外部 draw：**进入冻结时一次性录制**条带进
+     *  bandNode，冻结期间纯回放（零外部 draw）——外部高频 view.draw 会打乱 WebView 等
+     *  自绘渲染树的合成（整页闪白）。录制失败/无 bandNode（API<29）时冻结帧不绘制
+     *  （透明，极端降级）。 */
+    private val freeze: () -> Boolean = { false },
+    /** 强制重录制请求（resume 唤醒经 GlassSession.invalidateBackdrop 注入）：true 时本帧
+     *  无视 recordedTick 强制录制一次（冻结帧 = 单次外部 draw 后继续纯回放；去重帧 =
+     *  多录一次）。窗口 Surface 重建（后台切换）会丢弃 bandNode 已录制的显示列表，
+     *  而玻璃缓存图层按引用回放它——不重录制则表现为"玻璃轮廓在、内容空"。 */
+    private val forceRecord: () -> Boolean = { false },
+    /** 诊断日志出口（dedupe/冻结翻转/重录制时输出）。 */
     private val log: ((String) -> Unit)? = null,
 ) : Backdrop {
 
@@ -69,6 +80,7 @@ class ClippedViewBackdrop(
     private var recordCostCount = 0
     private var recordCostSumUs = 0L
     private var enableLogged = false
+    @Volatile private var frozen = false
 
     override fun DrawScope.drawBackdrop(
         density: Density,
@@ -78,8 +90,42 @@ class ClippedViewBackdrop(
         val tickValue = tick()
         val coordinates = coordinates ?: return
         val node = bandNode
+        // 冻结帧：进入时一次性录制，冻结期间纯回放（零外部 draw）；resume 唤醒强制
+        // 重录制一次（Surface 重建丢弃已录制内容，回放前必须刷新）
+        if (node != null && freeze()) {
+            if (!frozen) {
+                frozen = true
+                log?.invoke("backdrop freeze on (single-shot band record)")
+                val ok = runCatching { recordBand(node, coordinates) }
+                if (ok.isSuccess) {
+                    recordedTick = tickValue
+                } else {
+                    log?.invoke("freeze band record failed: ${ok.exceptionOrNull()}")
+                }
+            } else if (forceRecord()) {
+                log?.invoke("backdrop revive (re-record after resume)")
+                runCatching { recordBand(node, coordinates) }
+                    .onFailure { log?.invoke("freeze band re-record failed: $it") }
+            }
+            if (recordedTick != Int.MIN_VALUE) {
+                drawIntoCanvas { canvas ->
+                    val nc = canvas.nativeCanvas
+                    if (nc.isHardwareAccelerated) {
+                        runCatching { replay(nc, coordinates, node) }
+                            .onFailure {
+                                log?.invoke("frozen band replay failed: $it")
+                            }
+                    }
+                }
+            }
+            return
+        }
+        if (frozen) {
+            frozen = false
+            log?.invoke("backdrop freeze off (resume live sampling)")
+        }
         if (node != null && !dedupeDisabled && dedupe()) {
-            if (recordedTick != tickValue) {
+            if (recordedTick != tickValue || forceRecord()) {
                 recordedTick = tickValue
                 val ok = runCatching { recordBand(node, coordinates) }
                 if (ok.isFailure) {
