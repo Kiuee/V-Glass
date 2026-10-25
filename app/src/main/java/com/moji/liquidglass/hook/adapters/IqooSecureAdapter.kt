@@ -35,9 +35,10 @@ import java.lang.ref.WeakReference
  *   `A(item)`（protected final，纯换图 + m 内含 y(false) 翻转，无 l(item) 监听回调
  *   即无切页副作用），图标对存底栏字段真名 `l`（HashMap 条目→`com.originui.widget.navigation.a`，
  *   jadx 显示名 f20811l 系改名）。拖动悬停预览注入 [session.previewIconSwapper]：
- *   unchecked 走 `m(item)`、checked 走"图标对选中态末帧"（A() 会重播选中动画，真机
- *   表现为悬停期动画不断播放；末帧 = 静态 `h` 优先、Lottie `f` 停止+setProgress 1.0f
- *   [混淆名 C(float)]，§1.2 悬停统一语义）+ 同态去重。换肤（ColorChangeUtils.y 回调 +
+ *   unchecked 走 `m(item)`、checked 走"图标对**选中落定外观**"（A() 会重播选中动画，
+ *   真机表现为悬停期动画不断播放；落定 = 静态 `h`→`d`→res `c` 优先、Lottie 仅降级——
+ *   A() 播完动画即经结束回调换静态 `d`，Lottie 合成停帧 = 未选中轮廓与选中填充叠加重影，
+ *   §1.2 悬停统一语义）+ 同态去重。换肤（ColorChangeUtils.y 回调 +
  *   `O`/`Q` 重放）会整体重放映射——反射锚点每次换图前实时解析、不缓存。
  * - 标签色 = `originui_bottomnavigation_view_item_color_*` 真选择器（state_selected
  *   差异色，res/color 取证），取色即得强调色/内容色，无需 labelAccentFallbackToBubble。
@@ -341,9 +342,10 @@ object IqooSecureAdapter : AppAdapter {
      *  - checked → **不走 `A(item)`**（其 Lottie 路径 = B(lottie)+u() 重播选中动画，真机
      *    表现为"悬停时动画不断播放"）——按图标对映射（底栏字段真名 `l`，jadx "renamed
      *    from: l" 注释取证，显示名 f20811l 按名查必失败，vivo 官网 f12699c→c 同款坑）
-     *    取选中态：静态 `h` 优先（a 类字段真名 a~h，A() 消费顺序 h→f→c→d），
-     *    否则 Lottie `f` 停止 + setProgress 末帧（本 APK 混淆名 C(float)，jadx 实证）后
-     *    `B()` 挂图。映射读取失败回退 `A(item)`（静默降级为重播）。
+     *    取**选中落定外观**（静态 `h` → `d` → res `c` → Lottie 末帧，见
+     *    [applySelectedEndFrame]——A() 的 Lottie 动画结束回调即换静态 `d`，Lottie 合成
+     *    停帧 = 未选中轮廓层与选中填充层叠加 = 重影，真机实证）。
+     *    映射读取失败回退 `A(item)`（静默降级为重播）。
      *  - 同态去重（[lastAppliedChecked]）跳过重复调用；方法/字段每次实时解析（换肤
      *    ColorChangeUtils.y + O/Q 重放会整体重建映射），任一环节失败静默跳过（表现 =
      *    预览图标停留原 drawable，无崩溃）。 */
@@ -362,14 +364,24 @@ object IqooSecureAdapter : AppAdapter {
         }
     }
 
-    /** checked 末帧语义：图标对静态选中图优先，Lottie 选中则停动画 + 跳末帧，经条目
-     *  `B(Drawable)`（真名，jadx 无改名注释）挂图；映射/字段失配回退 `A(item)` 重播。 */
+    /** checked 末帧语义 = **应用落定外观**（非 Lottie 合成末帧）：A() 的完整链 = 静态 `h`
+     *  直用（不播动画）→ Lottie `f` 播放、**动画结束回调（f 类 onAnimationEnd）换成静态
+     *  `d`**（或 int res `c`）——即应用认可的选中落定图是静态图；vivo 动态符号的选中
+     *  Lottie 合成里"未选中轮廓层/选中填充层"两图层交叉过渡，停在动画帧 = 两层叠加
+     *  （真机"长按悬停图标重影"根因）。故取值顺序：`h` → `d` → res `c` → Lottie `f`
+     *  停止+跳末帧（仅全静态缺失的降级路径）。经条目 `B(Drawable)` 挂图（真名，jadx
+     *  无改名注释）。 */
     private fun applySelectedEndFrame(bar: View, item: View) {
-        val pair = iconPairOf(bar, item)
-        val static = pair?.first
-        val lottie = pair?.second
+        val pair = iconPairOf(bar, item) ?: return invokeItemSwap(bar, item, "A")
+        val (static, resId, lottie) = pair
         if (static != null) {
             invokeItemIcon(item, static)
+            return
+        }
+        if (resId != 0) {
+            runCatching {
+                item.context.getDrawable(resId)?.let { invokeItemIcon(item, it) }
+            }
             return
         }
         if (lottie != null) {
@@ -387,21 +399,27 @@ object IqooSecureAdapter : AppAdapter {
     }
 
     /** 反射读图标对映射（VBottomNavigationView 真名字段 `l`：条目 → 图标对；jadx
-     *  "renamed from: l" 注释取证，显示名 f20811l 按名查必失败）并按 A() 消费顺序取
-     *  **选中态**：静态选中 `h`（Drawable）优先、Lottie 选中 `f` 次之（图标对 a 类字段
-     *  真名 a~h，jadx "renamed from" 注释取证；非选中态为 b/g/e，勿混）。 */
-    private fun iconPairOf(bar: View, item: View): Pair<Drawable?, Drawable?>? = runCatching {
+     *  "renamed from: l" 注释取证，显示名 f20811l 按名查必失败）并按 A() 消费链取
+     *  **选中落定外观**：静态 `h`（构造器二参形态选中静态）→ `d`（三参形态，动画结束
+     *  回调落定图）→ int res `c` → Lottie `f`（图标对 a 类字段真名 a~h，jadx
+     *  "renamed from" 注释取证；非选中态为 b/g/e，勿混）。 */
+    private fun iconPairOf(bar: View, item: View): Triple<Drawable?, Int, Drawable?>? = runCatching {
         val map = bar.javaClass.getDeclaredField("l")
             .apply { isAccessible = true }
             .get(bar) as? Map<*, *> ?: return null
         val pair = map[item] ?: return null
         val static = runCatching {
             pair.javaClass.getDeclaredField("h").apply { isAccessible = true }.get(pair) as? Drawable
+        }.getOrNull() ?: runCatching {
+            pair.javaClass.getDeclaredField("d").apply { isAccessible = true }.get(pair) as? Drawable
         }.getOrNull()
+        val resId = runCatching {
+            pair.javaClass.getDeclaredField("c").apply { isAccessible = true }.getInt(pair)
+        }.getOrDefault(0)
         val lottie = runCatching {
             pair.javaClass.getDeclaredField("f").apply { isAccessible = true }.get(pair) as? Drawable
         }.getOrNull()
-        if (static != null || lottie != null) static to lottie else null
+        if (static != null || resId != 0 || lottie != null) Triple(static, resId, lottie) else null
     }.getOrNull()
 
     private fun invokeItemSwap(bar: View, item: View, method: String) {
