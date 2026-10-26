@@ -73,6 +73,7 @@ object AlipayAdapter : AppAdapter {
 
     // —— 运行期状态（弱引用防泄漏） ——
     @Volatile private var activityRef: WeakReference<Activity>? = null
+    @Volatile private var activeSessionRef: WeakReference<GlassSession>? = null
     @Volatile private var cachedNavInsetLift: Int = -1
     private val clearedBottomPaddings = ArrayList<Pair<View, Int>>(2)
     @Volatile private var tabContentRef: WeakReference<View>? = null
@@ -80,6 +81,12 @@ object AlipayAdapter : AppAdapter {
 
     private val earlySuppressed: MutableSet<View> =
         java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /** 受压制容器的"应用期望 alpha"镜像：拦截吞掉的非零写入记录在此（写 0 放行也记录），
+     *  供 mirrorVisibleGate 按应用语义判定显隐——应用若走纯 alpha 渐隐隐藏底栏，
+     *  渲染虽被压制、玻璃侧仍能跟随隐藏，不滞留。会话装配时置 1（延续可见态）。 */
+    private val suppressedAlphaByView: MutableMap<View, Float> =
+        java.util.Collections.synchronizedMap(java.util.WeakHashMap<View, Float>())
 
     override val descriptor: TabBarDescriptor = TabBarDescriptor(
         containerClassName = null,
@@ -169,6 +176,28 @@ object AlipayAdapter : AppAdapter {
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook TabBarViewModel ctor failed (app updated?)", it)
         }
+        // 原栏 alpha 写入拦截（真机三症状根因修复）：应用自己会写回容器 alpha=1——
+        // TabLauncherFragment.onResume 尾部 resetTabBarAlpha() 对 getTabBarViews()（含底栏
+        // 容器）setAlpha(1.0f)+setTranslationY(0)（冷启动/切 tab 恢复期触发；触摸路径亦
+        // 有其他写入口），把早期压制/装配压制的 alpha=0 冲掉，帧循环 gate 下一帧才压回
+        // ——间隔一帧渲染即"原底栏闪现"（冷启动出现 / 切首页出现一会 / 触摸瞬间闪现）。
+        // 对平台 View.setAlpha 做全局 hook，回调按实例 identity 判定：仅受压制容器
+        // （早期压制集合 + 活跃会话容器）的非零写入被吞，其余视图全部直通；
+        // 写 0（压制自身）永远放行；restore 通道经 onAuxGlassRestore 清活跃引用后
+        // 引擎的 alpha=1 还原天然放行。hook 安装失败降级为仅帧循环压制（闪现残留）。
+        runCatching {
+            val setAlpha = View::class.java.getDeclaredMethod("setAlpha", Float::class.javaPrimitiveType)
+            facade.around(setAlpha, { call ->
+                val view = call.thisObj as? View ?: return@around null
+                val alpha = call.args.firstOrNull() as? Float ?: return@around null
+                if (!isSuppressedContainer(view)) return@around null
+                suppressedAlphaByView[view] = alpha
+                if (alpha != 0f) false else null
+            }, null)
+            facade.log(android.util.Log.INFO, "hooked View.setAlpha: suppressed-container non-zero writes swallowed")
+        }.onFailure {
+            facade.log(android.util.Log.WARN, "hook View.setAlpha failed (flash-back may remain)", it)
+        }
         // 导航栏透明（商店 §2.2 / 淘宝 §13.2 同款）：应用全部设色路径收口到框架
         // PhoneWindow（setNavigationBarTransparent 与 refreshNavigationBarInternal 最终都调
         // window.setNavigationBarColor），吞非透明色与对比度蒙层 true；透明色与蒙层关闭
@@ -205,6 +234,7 @@ object AlipayAdapter : AppAdapter {
         facade.log(android.util.Log.INFO, "alipay early-suppress tab bar container (pre-install)")
         view.postDelayed({
             if (synchronized(earlySuppressed) { earlySuppressed.remove(view) }) {
+                // 先移出拦截集合再写 1：setAlpha hook 按 identity 判定，此时写入天然放行
                 view.alpha = 1f
                 facade.log(
                     android.util.Log.WARN,
@@ -212,6 +242,13 @@ object AlipayAdapter : AppAdapter {
                 )
             }
         }, EARLY_SUPPRESS_FALLBACK_MS)
+    }
+
+    /** setAlpha 拦截判定：受压制容器 = 早期压制集合成员或活跃会话的底栏容器（identity）。
+     *  restore 通道：onAuxGlassRestore 先清活跃引用，引擎随后的 alpha=1 还原自然放行。 */
+    private fun isSuppressedContainer(view: View): Boolean {
+        if (synchronized(earlySuppressed) { earlySuppressed.contains(view) }) return true
+        return activeSessionRef?.get()?.tabContainer === view
     }
 
     override fun onSessionCreated(
@@ -222,18 +259,27 @@ object AlipayAdapter : AppAdapter {
     ) {
         activityRef = WeakReference(activity)
         earlySuppressed.remove(session.tabContainer)
+        activeSessionRef = WeakReference(session)
+        suppressedAlphaByView[session.tabContainer] = 1f
         if (session.originalContainerVisibility != View.VISIBLE) {
             session.tabContainer.visibility = session.originalContainerVisibility
         }
         GlassInstaller.navInsetProvider = { computeNavInsetLift(session, activity) }
-        session.onAuxGlassRestore = { restoreBottomNormalizations() }
+        // restore() 首个回调即清活跃引用与 alpha 镜像：引擎随后的 tabContainer.alpha = 1f
+        // 还原写入不再命中 setAlpha 拦截（identity 已不匹配），模块停用/会话重建时原栏正常恢复
+        session.onAuxGlassRestore = {
+            activeSessionRef = null
+            suppressedAlphaByView.remove(session.tabContainer)
+            restoreBottomNormalizations()
+        }
         session.mirrorVisibleGate = { mirrorGate(session) }
     }
 
     /**
      * 逐帧门控 + 底部归一化。isTabBarHidden 语义（应用侧同款）：可见 + isShown +
-     * 平移未过半；平移分量写 GlassBarState 让玻璃随应用渐隐位移跟随。稳态零写入，
-     * 仅失配时重申内容延伸（tabcontent 储备归零 / content 链 padding 清除）。
+     * 平移未过半 + 应用期望 alpha（setAlpha 拦截镜像值）未低于阈值；平移分量写
+     * GlassBarState 让玻璃随应用渐隐位移跟随。稳态零写入，仅失配时重申内容延伸
+     * （tabcontent 储备归零 / content 链 padding 清除）。
      */
     private fun mirrorGate(session: GlassSession): Boolean {
         val bar = session.tabContainer
@@ -244,7 +290,9 @@ object AlipayAdapter : AppAdapter {
         if (bar.visibility == View.VISIBLE && bar.alpha != 0f) bar.alpha = 0f
         reassertBottomNormalizations(session)
         reassertNavigationBarTransparent()
-        return bar.visibility == View.VISIBLE && bar.isShown && ty > -bar.height * 0.5f
+        val appliedAlpha = suppressedAlphaByView[bar] ?: 1f
+        return bar.visibility == View.VISIBLE && bar.isShown &&
+            ty > -bar.height * 0.5f && appliedAlpha > 0.1f
     }
 
     private fun reassertNavigationBarTransparent() {
