@@ -91,6 +91,11 @@ data class TabBarDescriptor(
      *  32dp）被等比缩小，按应用声明原生尺寸 1:1 镜像；盒大于 28dp 预留时居中溢出
      *  （内容层无裁剪，icon+标签总高仍在栏高内）；null 时其余应用逐位不变（§0.4 红线）。 */
     val iconBoxDp: Int? = null,
+    /** WHOLE_TAB_FULL 整条目镜像的纵向对齐（默认 false = 居中，既有应用逐位不变）。
+     *  原生条目显著高于玻璃槽位、且内容贴条目底部的应用（如芒果TV条目 80dp、内容在
+     *  底部 51dp）居中镜像会把条目底部（标签）裁出槽位，按应用声明改底对齐——条目
+     *  底边贴槽位底边（与原生布局关系一致），超出槽位的只有条目顶部空白边。 */
+    val wholeTabAlignBottom: Boolean = false,
 )
 
 /**

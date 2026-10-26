@@ -444,7 +444,11 @@ fun GlassRoot(
                                         // 槽位与原生条目宽高比不同，fit 缩放会双向拉伸变形
                                         val tabView = tab.tabView ?: return@LiquidBottomTab
                                         val fullPainter = remember(tabView) {
-                                            LiveTabFullPainter(tabView, tick)
+                                            LiveTabFullPainter(
+                                                tabView,
+                                                tick,
+                                                session.extractor.descriptor.wholeTabAlignBottom,
+                                            )
                                         }
                                         Box(
                                             Modifier.fillMaxSize(),
@@ -790,14 +794,18 @@ private class ItemForegroundPainter(
 }
 
 /**
- * WHOLE_TAB_FULL 整条目镜像 Painter：**1:1 原尺寸居中**绘制，绝不缩放——
+ * WHOLE_TAB_FULL 整条目镜像 Painter：**1:1 原尺寸**绘制，绝不缩放——
  * 玻璃槽位（barWidth/tab 数宽 × 栏高−8dp）与原生条目（屏宽/tab 数 × 应用栏高）
- * 宽高比必然不同，fit 缩放会双向不等比拉伸（微博实测图标/文字变形）；原生条目
- * 内容居中，1:1 居中后超出槽位的只有条目自身的空白边，视觉无裁切。
+ * 宽高比必然不同，fit 缩放会双向不等比拉伸（微博实测图标/文字变形）；默认居中：
+ * 原生条目内容居中，1:1 居中后超出槽位的只有条目自身的空白边，视觉无裁切。
+ * [alignBottom]（descriptor 声明，默认 false = 居中，既有应用逐位不变）：原生条目
+ * 内容贴底的条目改底对齐——条目底边贴槽位底边，超出槽位的只剩条目顶部空白边
+ * （芒果TV：条目 80dp 内容在底部 51dp，居中会把标签裁出槽位）。
  */
 private class LiveTabFullPainter(
     private val view: View,
     private val tick: IntState,
+    private val alignBottom: Boolean = false,
 ) : Painter() {
     override val intrinsicSize = Size.Unspecified
 
@@ -808,7 +816,8 @@ private class LiveTabFullPainter(
         if (vw <= 0 || vh <= 0 || !view.isShown) return
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
-        canvas.translate((size.width - vw) / 2f, (size.height - vh) / 2f)
+        val offsetY = if (alignBottom) size.height - vh else (size.height - vh) / 2f
+        canvas.translate((size.width - vw) / 2f, offsetY)
         view.draw(canvas)
         canvas.restore()
     }
