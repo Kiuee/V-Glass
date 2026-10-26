@@ -21,7 +21,8 @@ object AdaptedVersionRegistry {
         // "com.xingin.xhs" to listOf("9.51.0"),
 
         "com.vivo.gallery" to listOf("10.2.9.2"),
-        "com.sina.weibo" to listOf("16.10.1","16.10.2")
+        "com.sina.weibo" to listOf("16.10.1","16.10.2"),
+        "com.xingin.xhs" to listOf("9.51.0"),
 
     )
 }
