@@ -15,5 +15,6 @@
         <item>com.iqoo.secure</item>
         <item>com.vivo.health</item>
         <item>com.taobao.taobao</item>
+        <item>com.eg.android.AlipayGphone</item>
     </string-array>
 </resources>
