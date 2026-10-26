@@ -66,6 +66,7 @@ object AlipayAdapter : AppAdapter {
     private const val TAB_ACTIVITY = "com.eg.android.AlipayGphone.AlipayLogin"
     private const val BAR_ID_NAME = "tab_bar_container_fl"
     private const val VIEW_MODEL_CLASS = "com.alipay.android.launcher.tab.TabBarViewModel"
+    private const val TL_COMMON_UTILS_CLASS = "com.alipay.mobile.tablauncher.util.TLCommonUtils"
     private const val ITEM_PACKAGE_PREFIX = "com.alipay.android.launcher.tab."
 
     private const val EARLY_SUPPRESS_FALLBACK_MS = 8_000L
@@ -197,6 +198,45 @@ object AlipayAdapter : AppAdapter {
             facade.log(android.util.Log.INFO, "hooked View.setAlpha: suppressed-container non-zero writes swallowed")
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook View.setAlpha failed (flash-back may remain)", it)
+        }
+        // 内容储备 margin 写入点拦截（深色模式切 tab 闪白根因修复）：tabcontent 的
+        // 54dp+inset 储备归零靠帧循环重申是"隔一帧"——切 tab 链路（widget group
+        // onResume → refreshTabBar → setTabContentBottomMargin，attachTab 亦同口）经
+        // TLCommonUtils.setViewMargin 把大 margin 写回，一帧留白在深色下呈白闪。
+        // hook 该静态方法：目标（id = android.R.id.tabcontent，平台 id 唯一，无会话
+        // 依赖、覆盖装配前窗口）且 bottom > 0 时同栈以 0 重入原方法（重入 bottom=0
+        // 不再命中，收敛），原调用跳过。restore 走 lp 直改不经过此方法，不受影响；
+        // 模块停用时 ConfigCheckedFacade 惰性直通恢复应用原生 margin。
+        runCatching {
+            val utilsClass = Class.forName(TL_COMMON_UTILS_CLASS, false, loader)
+            val setViewMargin = utilsClass.getDeclaredMethod(
+                "setViewMargin",
+                View::class.java,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+            )
+            facade.around(setViewMargin, { call ->
+                val view = call.args.getOrNull(0) as? View ?: return@around null
+                val bottom = call.args.getOrNull(4) as? Int ?: return@around null
+                if (bottom > 0 && view.id == android.R.id.tabcontent) {
+                    runCatching {
+                        setViewMargin.invoke(
+                            null,
+                            view,
+                            call.args.getOrNull(1) ?: 0,
+                            call.args.getOrNull(2) ?: 0,
+                            call.args.getOrNull(3) ?: 0,
+                            0,
+                        )
+                    }
+                    0 // 非 null 且非 Unit → 跳过原调用（大 margin 不落地）
+                } else null
+            }, null)
+            facade.log(android.util.Log.INFO, "hooked TLCommonUtils.setViewMargin: tabcontent reserve zeroed in-stack")
+        }.onFailure {
+            facade.log(android.util.Log.WARN, "hook TLCommonUtils.setViewMargin failed (content flash may remain)", it)
         }
         // 导航栏透明（商店 §2.2 / 淘宝 §13.2 同款）：应用全部设色路径收口到框架
         // PhoneWindow（setNavigationBarTransparent 与 refreshNavigationBarInternal 最终都调
