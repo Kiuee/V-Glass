@@ -203,6 +203,48 @@ fun SegmentedCheckboxItem(
     )
 }
 
+/** 应用勾选条目：前置槽位（应用图标），整行点击 = onClick（如展开版本适配信息，带触觉反馈），
+ *  onClick 为空时整行点击退回切换勾选；勾选框自身始终独立消费点击。 */
+@Composable
+fun SegmentedAppCheckboxItem(
+    title: String,
+    summary: String? = null,
+    leading: (@Composable () -> Unit)? = null,
+    trailingContent: (@Composable () -> Unit)? = null,
+    colors: ListItemColors = defaultSegmentedColors(),
+    checked: Boolean,
+    checkboxEnabled: Boolean = true,
+    onClick: (() -> Unit)? = null,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+
+    SegmentedListItem(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.VirtualKey)
+            if (onClick != null) onClick() else onCheckedChange(!checked)
+        },
+        colors = colors,
+        shapes = LocalListItemShapes.current ?: ListItemDefaults.segmentedShapes(0, 1),
+        content = { Text(title) },
+        leadingContent = leading,
+        trailingContent = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                trailingContent?.invoke()
+                Checkbox(
+                    checked = checked,
+                    onCheckedChange = if (checkboxEnabled) onCheckedChange else null,
+                    enabled = checkboxEnabled,
+                )
+            }
+        },
+        supportingContent = summary?.let { { Text(it, style = MaterialTheme.typography.bodyMedium) } },
+    )
+}
+
 /** 下拉条目：trailing 显示当前值文本，弹层为分组菜单（对齐参考项目）。 */
 @Composable
 fun SegmentedDropdownItem(

@@ -2,63 +2,49 @@ package com.moji.liquidglass.ui.screen.apps
 
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.moji.liquidglass.R
 import com.moji.liquidglass.hook.adapters.AdapterRegistry
 import com.moji.liquidglass.ui.ConfigController
+import com.moji.liquidglass.ui.component.SearchStatus
+import com.moji.liquidglass.ui.component.StatusTag
+import com.moji.liquidglass.ui.component.bottombar.LocalMainPagerState
 import com.moji.liquidglass.ui.theme.LocalUiMode
 import com.moji.liquidglass.ui.theme.UiMode
 import com.moji.liquidglass.ui.theme.isInDarkTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
-import top.yukonga.miuix.kmp.basic.Text as MiuixText
 
 internal data class TargetAppInfo(
     val displayName: String,
     val packageName: String,
-    val note: String,
     /** 已安装的 versionName；null = 未安装。 */
     val installedVersion: String?,
-    /** 已适配的 versionName 列表（来自适配器声明，chip 点击展开查看）。 */
+    /** 已适配的 versionName 列表（来自适配器声明，整行点击展开查看）。 */
     val adaptedVersions: List<String>,
     /** 适配状态：已安装版本精确命中适配器 adaptedVersions 列表 = 已适配。 */
     val adaptState: AdaptState,
-) {
-    /** 行内副标题：包名 + 已安装版本。 */
-    val summaryLine: String
-        get() = when {
-            installedVersion == null -> packageName
-            else -> "$packageName（$installedVersion）"
-        }
-}
+)
 
 internal enum class AdaptState { Adapted, NotAdapted, NotInstalled }
 
-/** 目标应用清单（名称/包名/适配版本来自适配器注册表，安装版本读 PackageManager，适配要点按包名映射到文案）。 */
+/** 目标应用清单（名称/包名/适配版本来自适配器注册表，安装版本读 PackageManager）。 */
 @Composable
 internal fun rememberTargetApps(): List<TargetAppInfo> {
-    val noteStore = stringResource(R.string.app_note_store)
-    val noteGallery = stringResource(R.string.app_note_gallery)
-    val noteAmap = stringResource(R.string.app_note_amap)
-    val noteXhs = stringResource(R.string.app_note_xhs)
-    val noteFileManager = stringResource(R.string.app_note_filemanager)
     val context = LocalContext.current
-    return remember(noteStore, noteGallery, noteAmap, noteXhs, noteFileManager, context) {
+    return remember(context) {
         val pm = context.packageManager
         AdapterRegistry.all.map { adapter ->
             val pkg = adapter.targetPackage
@@ -75,14 +61,6 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
             TargetAppInfo(
                 displayName = adapter.displayName,
                 packageName = pkg,
-                note = when (pkg) {
-                    "com.bbk.appstore" -> noteStore
-                    "com.vivo.gallery" -> noteGallery
-                    "com.autonavi.minimap" -> noteAmap
-                    "com.xingin.xhs" -> noteXhs
-                    "com.android.filemanager" -> noteFileManager
-                    else -> ""
-                },
                 installedVersion = installedVersion,
                 adaptedVersions = adapter.adaptedVersions,
                 adaptState = when {
@@ -95,15 +73,24 @@ internal fun rememberTargetApps(): List<TargetAppInfo> {
     }
 }
 
+/** 展开区末行文案：已安装显示"当前安装：x.y.z"，未安装显示"未安装"。 */
+@Composable
+internal fun installedVersionLine(app: TargetAppInfo): String =
+    if (app.installedVersion != null) {
+        stringResource(R.string.app_installed_version_fmt, app.installedVersion)
+    } else {
+        stringResource(R.string.app_not_installed)
+    }
+
 /** 未适配的已安装应用签名（pkg@version 排序拼接）：红条关闭状态按此持久化，集合变化后红条重现。 */
 internal fun unadaptedSignature(apps: List<TargetAppInfo>): String = apps
     .filter { it.adaptState == AdaptState.NotAdapted }
     .joinToString("|") { "${it.packageName}@${it.installedVersion}" }
 
-/** 适配状态 chip：配色对齐状态卡/警告条方案（动态取色走主题容器色，固定色与卡片同源色板），
- *  字号与内边距按列表行文本尺度设计，不用 StatusTag 的内嵌小徽章规格。 */
+/** 适配状态小标签：规格走共享 StatusTag（对齐参考项目超级用户页），
+ *  已适配/未安装配色分别对齐其 ROOT / UMOUNT 标签，未适配沿用警示容器色。 */
 @Composable
-internal fun AdaptChip(state: AdaptState) {
+internal fun AdaptStatusTag(state: AdaptState) {
     val dark = isInDarkTheme()
     val label = stringResource(
         when (state) {
@@ -115,71 +102,83 @@ internal fun AdaptChip(state: AdaptState) {
     when (LocalUiMode.current) {
         UiMode.Miuix -> {
             val dynamic = MiuixTheme.isDynamicColor
-            val background = when {
-                dynamic && state == AdaptState.Adapted -> colorScheme.secondaryContainer
-                dynamic && state == AdaptState.NotAdapted -> colorScheme.errorContainer
-                dynamic -> colorScheme.surfaceContainer
-                state == AdaptState.Adapted -> if (dark) Color(0xFF1A3825) else Color(0xFFDFFAE4)
-                state == AdaptState.NotAdapted -> if (dark) Color(0xFF310808) else Color(0xFFF8E2E2)
-                else -> if (dark) Color(0xFF2A2A2A) else Color(0xFFECECEC)
+            val background = when (state) {
+                AdaptState.Adapted -> colorScheme.tertiaryContainer.copy(alpha = 0.6f)
+                AdaptState.NotAdapted -> if (dynamic) {
+                    colorScheme.errorContainer
+                } else if (dark) {
+                    Color(0xFF310808)
+                } else {
+                    Color(0xFFF8E2E2)
+                }
+                AdaptState.NotInstalled -> if (dark) Color.White.copy(alpha = 0.4f) else Color.Black.copy(alpha = 0.3f)
             }
-            val content = when {
-                dynamic && state == AdaptState.Adapted -> colorScheme.onSecondaryContainer
-                dynamic && state == AdaptState.NotAdapted -> colorScheme.onErrorContainer
-                dynamic -> colorScheme.onSurfaceContainer
-                state == AdaptState.Adapted -> if (dark) Color(0xFFB8E8C5) else Color(0xFF164A29)
-                state == AdaptState.NotAdapted -> Color(0xFFF72727)
-                else -> if (dark) Color(0xFFAAAAAA) else Color(0xFF666666)
+            val content = when (state) {
+                AdaptState.Adapted -> colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                AdaptState.NotAdapted -> if (dynamic) {
+                    colorScheme.onErrorContainer
+                } else {
+                    Color(0xFFF72727)
+                }
+                AdaptState.NotInstalled -> if (dark) Color.Black.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.8f)
             }
-            Box(
-                modifier = Modifier.background(
-                    color = background,
-                    shape = RoundedCornerShape(8.dp),
-                ),
-            ) {
-                MiuixText(
-                    text = label,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = content,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    maxLines = 1,
-                )
-            }
+            StatusTag(label, backgroundColor = background, contentColor = content)
         }
 
         UiMode.Material -> {
             val (background, content) = when (state) {
-                AdaptState.Adapted -> MaterialTheme.colorScheme.secondaryContainer to
-                    MaterialTheme.colorScheme.onSecondaryContainer
+                AdaptState.Adapted -> MaterialTheme.colorScheme.primary to
+                    MaterialTheme.colorScheme.onPrimary
                 AdaptState.NotAdapted -> MaterialTheme.colorScheme.errorContainer to
                     MaterialTheme.colorScheme.onErrorContainer
-                AdaptState.NotInstalled -> MaterialTheme.colorScheme.surfaceContainerHighest to
-                    MaterialTheme.colorScheme.onSurfaceVariant
+                AdaptState.NotInstalled -> MaterialTheme.colorScheme.tertiaryContainer to
+                    MaterialTheme.colorScheme.onTertiaryContainer
             }
-            Box(
-                modifier = Modifier.background(
-                    color = background,
-                    shape = RoundedCornerShape(6.dp),
-                ),
-            ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = content,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    maxLines = 1,
-                )
-            }
+            StatusTag(label, backgroundColor = background, contentColor = content)
         }
     }
 }
 
-/** 应用页分发器。 */
+/** 应用页分发器：搜索状态机/搜索词/展开集上提共用，切离本页时强制收起搜索（对齐参考项目）。 */
 @Composable
 fun AppsPager(bottomInnerPadding: Dp, config: ConfigController) {
+    val apps = rememberTargetApps()
+    val searchHint = stringResource(R.string.apps_search_hint)
+    var searchStatus by remember(searchHint) { mutableStateOf(SearchStatus(label = searchHint)) }
+    var expandedPkgs by rememberSaveable { mutableStateOf(listOf<String>()) }
+    val onSearchStatusChange: (SearchStatus) -> Unit = { searchStatus = it }
+    val onToggleExpand: (String) -> Unit = { pkg ->
+        expandedPkgs = if (pkg in expandedPkgs) expandedPkgs - pkg else expandedPkgs + pkg
+    }
+
+    // 切离应用页即收起搜索并清词，避免返回时残留在展开态
+    val mainPagerState = LocalMainPagerState.current
+    LaunchedEffect(mainPagerState) {
+        snapshotFlow { mainPagerState.selectedPage }.collect { page ->
+            if (page != 1 && !searchStatus.isCollapsed()) {
+                searchStatus = searchStatus.copy(searchText = "", current = SearchStatus.Status.COLLAPSED)
+            }
+        }
+    }
+
     when (LocalUiMode.current) {
-        UiMode.Material -> AppsPagerMaterial(bottomInnerPadding, config)
-        UiMode.Miuix -> AppsPagerMiuix(bottomInnerPadding, config)
+        UiMode.Material -> AppsPagerMaterial(
+            bottomInnerPadding = bottomInnerPadding,
+            config = config,
+            apps = apps,
+            searchStatus = searchStatus,
+            onSearchStatusChange = onSearchStatusChange,
+            expandedPkgs = expandedPkgs,
+            onToggleExpand = onToggleExpand,
+        )
+        UiMode.Miuix -> AppsPagerMiuix(
+            bottomInnerPadding = bottomInnerPadding,
+            config = config,
+            apps = apps,
+            searchStatus = searchStatus,
+            onSearchStatusChange = onSearchStatusChange,
+            expandedPkgs = expandedPkgs,
+            onToggleExpand = onToggleExpand,
+        )
     }
 }
