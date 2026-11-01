@@ -286,6 +286,14 @@ class GlassSession(
     @Volatile
     var previewIconProgress: ((lottie: Any, progress: Float) -> Unit)? = null
 
+    /** WHOLE_TAB 帧预览的"反选还原"钩子（可选，默认 null = 维持动画首帧回退语义）：
+     *  液泡离开被拖的原选中 tab 时，以应用自身的反选换图语义回到未选中状态（vivo
+     *  官网 VBottomNavigationView.w(item)：y(false)+停动画+换回未选中静态图——其
+     *  选中动画首帧仍带选中观感，不能当未选中外观）。返回 true = 已应用；null 或
+     *  返回 false → 引擎回退动画首帧（旧行为，未注入的应用逐位不变）。 */
+    @Volatile
+    var previewIconUnselected: ((index: Int) -> Boolean)? = null
+
     /** 诊断日志出口（hook 层注入 facade.log）。 */
     @Volatile
     var logger: ((String) -> Unit)? = null
@@ -538,14 +546,16 @@ class GlassSession(
             ?: tabViews.indexOfFirst { it.isSelected }.coerceAtLeast(0)
                 .also { wholeTabPreviewOrigin = it }
         if (target == origin) {
-            // 悬停回原 tab：预览保持激活（原 tab 维持首帧），仅清悬停目标——边界抖动
-            // 不反复挂载/恢复（那会表现为"动画被反复触发"）；还原统一在拖动结束的
-            // endTabPreview() 做（LiquidBottomTabs onDragStopped 回原 tab 时调用）
+            // 悬停回原 tab：预览保持激活，仅清悬停目标——边界抖动不反复挂载/恢复
+            // （那会表现为"动画被反复触发"）；原 tab 恢复保存的原选中静态图（拖离时
+            // 被反选换图/挂首帧过，悬停本就该呈选中落定外观，§0.5 A.1）；还原统一在
+            // 拖动结束的 endTabPreview() 做（LiquidBottomTabs onDragStopped 回原 tab）
             if (wholeTabPreviewTarget >= 0) {
                 setTabChecked(wholeTabPreviewTarget, false)
                 restorePreviewFrame(wholeTabPreviewTarget)
                 wholeTabPreviewTarget = -1
             }
+            restorePreviewFrame(origin)
             setTabChecked(origin, true)
             return
         }
@@ -555,9 +565,14 @@ class GlassSession(
             setTabChecked(previous, false)
             restorePreviewFrame(previous)
         } else {
-            // 被拖离的原选中条目 = 动画首帧（未选中外观）
+            // 被拖离的原选中条目 = 回到未选中状态：优先适配器注入的应用自身反选换图
+            // 语义（换回未选中静态图——动画首帧可能仍带选中观感，不能当未选中外观）；
+            // 未注入/失败回退动画首帧（旧行为）。当前 drawable 先存，拖动结束统一还原
             setTabChecked(origin, false)
-            showPreviewFrame(origin, 0f)
+            if (previewIconUnselected != null) savePreviewDrawable(origin)
+            if (previewIconUnselected?.invoke(origin) != true) {
+                showPreviewFrame(origin, 0f)
+            }
         }
         setTabChecked(target, true)
         showPreviewFrame(target, 1f)
@@ -573,6 +588,12 @@ class GlassSession(
         val iconId = tabView.context.resources.getIdentifier(iconIdName, "id", tabView.context.packageName)
         if (iconId == 0) return null
         return tabView.findViewById<View>(iconId) as? android.widget.ImageView
+    }
+
+    /** 保存该 tab 图标当前 drawable（[previewIconUnselected] 应用反选换图前调用，
+     *  供拖动结束 [endTabPreview] 统一还原；无图标视图则无操作）。 */
+    private fun savePreviewDrawable(index: Int) {
+        previewIconView(index)?.let { savedPreviewDrawables.put(index, it.drawable) }
     }
 
     /** WHOLE_TAB 图标帧预览：把适配器钩子提供的 Lottie drawable 临时挂到该 tab 图标

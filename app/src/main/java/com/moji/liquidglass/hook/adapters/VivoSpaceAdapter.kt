@@ -32,7 +32,7 @@ import java.lang.ref.WeakReference
  *   隐藏（pending 1.5s），弹窗未出现则视为无弹窗直接显示。此前作用于 logo_adv_layout/
  *   zt.f 的提升/轮询/信号 hook 三层全部作用于错误广告面，已全部删除（§4.7 教训 9）。
  * - 内容延伸（页面底部留白清零）：分发点改投 0 + 收口（VViewUtils/View.setPadding/
- *   View.setLayoutParams，阈值取应用自身基准 fq.d.f）+ 常驻清扫（§4.2）。信息流尾部
+ *   View.setLayoutParams，阈值取应用自身基准 qq.d.f）+ 常驻清扫（§4.2）。信息流尾部
  *   footer（168px）是首页触摸/滚动拦截协议的承重墙，**不可归零**（归零导致滚动拦截
  *   死区，已回滚）——信息流最末端玻璃栏周围可见约 168px 页面背景带，为结构性代价。
  */
@@ -41,7 +41,9 @@ object VivoSpaceAdapter : AppAdapter {
     override val targetPackage: String = "com.vivo.space"
     override val displayName: String = "vivo 官网"
     override val tabActivityClassName: String? = "com.vivo.space.ui.VivoSpaceTabActivity"
-    override val baselineVersions: List<String> = listOf("13.3.0.1")
+    // 兼容窗口（主册 §0.6.3）= 13.6.0.1：13.3.0.1 的内容延伸锚点（fq.* 包）已随本次
+    // 升版删除、未保留候选回退（早于 §0.6.3 立规），不再声明支持。
+    override val baselineVersions: List<String> = listOf("13.6.0.1")
 
     private const val BAR_CLASS = "com.vivo.space.lib.widget.originui.SpaceVBottomNavigationView"
     // 底栏在主布局中的资源 id（类名失配时的结构兜底）
@@ -68,7 +70,7 @@ object VivoSpaceAdapter : AppAdapter {
     @Volatile private var splashPendingStartMs = 0L
     /** 原生底栏容器：预留清零的豁免子树（镜像数据源，自身 inset 维护不可被清）。 */
     @Volatile private var tabBarRef: WeakReference<View>? = null
-    /** 应用上下文缓存（fq.d.f 阈值解析用；onTabActivityResumed/onSessionCreated 主线程刷新）。 */
+    /** 应用上下文缓存（qq.d.f 阈值解析用；onTabActivityResumed/onSessionCreated 主线程刷新）。 */
     @Volatile private var appContextRef: WeakReference<Context>? = null
     @Volatile private var classifyFragmentFieldWarned = false
     @Volatile private var classifyVpMissingWarned = false
@@ -385,10 +387,11 @@ object VivoSpaceAdapter : AppAdapter {
     }
 
     // —— 内容延伸（页面底部留白清零） ——
-    // 留白公共源 = fq.d（日志名 "BottomNavigationManager"）：b(Context, c) 变体转发全量
-    // 底栏高度（RecommendH5/Forum 系），e() 变体经 fq.e.c(int) 只转发余量（Member/
-    // HomePage/Service）。Classify 页把值写成 bottomMargin，其余走 VViewUtils
-    // setPaddingBottom。阈值 = fq.d.f(Context)（应用自身的基准,本设备实测 198px=dp66@3x）。
+    // 留白公共源 = qq.d（日志名 "BottomNavigationManager"；13.3.0.1 时为 fq.d，整包混淆
+    // 迁移 fq→qq，类内结构逐字未变——升版用日志名 grep 定位新包名）：b(Context, c) 变体
+    // 转发全量底栏高度（RecommendH5/Forum 系），e() 变体经 qq.e.c(int) 只转发余量
+    // （HomePage/Service/Zone）。Classify 页把值写成 bottomMargin，其余走 VViewUtils
+    // setPaddingBottom。阈值 = qq.d.f(Context)（应用自身的基准,本设备实测 198px=dp66@3x）。
     override fun installAppHooks(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader) {
         appClassLoader = loader
         configProvider = config
@@ -399,11 +402,11 @@ object VivoSpaceAdapter : AppAdapter {
             facade.log(android.util.Log.INFO, "contentExtend=off: page bottom insets untouched")
             return
         }
-        // ① 全量分发点 + ② 余量变体：公共依赖 fq.d$c。解析失败只降级 ①② 并 WARN，
+        // ① 全量分发点 + ② 余量变体：公共依赖 qq.d$c。解析失败只降级 ①② 并 WARN，
         //    **不阻断** ③④⑤⑥（此前 fq.d$c 失配会让全部内容延伸 hook 静默跳过——单点失效）。
-        val listenerIface = runCatching { Class.forName("fq.d\$c", true, loader) }.getOrNull()
+        val listenerIface = runCatching { Class.forName("qq.d\$c", true, loader) }.getOrNull()
         if (listenerIface == null) {
-            facade.log(android.util.Log.WARN, "fq.d\$c not found (app updated?), dispatch sinks ①② skipped")
+            facade.log(android.util.Log.WARN, "qq.d\$c not found (app updated?), dispatch sinks ①② skipped")
         } else {
             val deliverZero: (Any) -> Unit = { listener ->
                 listenerIface.getMethod("c", Int::class.javaPrimitiveType)
@@ -413,7 +416,7 @@ object VivoSpaceAdapter : AppAdapter {
             // ① 全量分发点：立即投递改投 0 并跳过原方法（原方法还会 post 一次布局后重投递，
             //    一并去除）。选购页监听器例外放行（见 ③）。
             runCatching {
-                val b = Class.forName("fq.d", true, loader)
+                val b = Class.forName("qq.d", true, loader)
                     .getDeclaredMethod("b", android.content.Context::class.java, listenerIface)
                 facade.around(b, { call ->
                     val listener = call.args.getOrNull(1)
@@ -423,11 +426,11 @@ object VivoSpaceAdapter : AppAdapter {
                     listener?.let(deliverZero)
                     false // 非 null 哨兵 → 跳过原方法（void，返回值被忽略）
                 }, null)
-                facade.log(android.util.Log.INFO, "hooked fq.d.b: bottom inset dispatch zeroed (classify exempt)")
-            }.onFailure { facade.log(android.util.Log.WARN, "hook fq.d.b failed (app updated?)", it) }
+                facade.log(android.util.Log.INFO, "hooked qq.d.b: bottom inset dispatch zeroed (classify exempt)")
+            }.onFailure { facade.log(android.util.Log.WARN, "hook qq.d.b failed (app updated?)", it) }
             // ② 余量变体收口：包装器会把 (高度-dp66) 为负时回退到导航栏高度，改投 0 并跳过
             runCatching {
-                val eC = Class.forName("fq.e", true, loader)
+                val eC = Class.forName("qq.e", true, loader)
                     .getDeclaredMethod("c", Int::class.javaPrimitiveType)
                 facade.around(eC, { call ->
                     val inner = call.thisObj?.javaClass?.declaredFields
@@ -437,13 +440,13 @@ object VivoSpaceAdapter : AppAdapter {
                     if (inner != null) deliverZero(inner)
                     false
                 }, null)
-                facade.log(android.util.Log.INFO, "hooked fq.e.c: extra-height variant zeroed")
-            }.onFailure { facade.log(android.util.Log.WARN, "hook fq.e.c failed (app updated?)", it) }
+                facade.log(android.util.Log.INFO, "hooked qq.e.c: extra-height variant zeroed")
+            }.onFailure { facade.log(android.util.Log.WARN, "hook qq.e.c failed (app updated?)", it) }
         }
         installClassifyHook(facade, loader)
         // ④ 实时收口（WebView 等容器）：页面状态变化会重新 setPaddingBottom/setMarginBottom
         //    塞入底栏级留白，值 ≥ 阈值 → 归零。阈值惰性解析（首次回调时取上下文反射
-        //    fq.d.f，安装发生在 LSPosed 后台线程，§4.7 教训 4b），**无条件安装**，解析
+        //    qq.d.f，安装发生在 LSPosed 后台线程，§4.7 教训 4b），**无条件安装**，解析
         //    失败放行原值并 WARN 一次。
         runCatching {
             val utils = Class.forName("com.originui.core.utils.VViewUtils", true, loader)
@@ -641,7 +644,7 @@ object VivoSpaceAdapter : AppAdapter {
         return "${v.javaClass.name}($idName)"
     }
 
-    /** 底栏预留阈值像素（惰性）：优先反射应用自身的 `fq.d.f(Context)`——SDK/边到边感知
+    /** 底栏预留阈值像素（惰性）：优先反射应用自身的 `qq.d.f(Context)`——SDK/边到边感知
      *  （Android 15+ 全屏设备为 dp50，其余 dp66），硬编码 dp66 会漏掉 dp50 级留白（精选页
      *  回顶态留白复现的根因之一）；失败回退 R$dimen.dp66 字段反射。上下文用缓存的
      *  Activity 或 ActivityThread.currentApplication（任意线程可用，不依赖应用的
@@ -652,7 +655,7 @@ object VivoSpaceAdapter : AppAdapter {
         val context = appContextRef?.get() ?: currentApplication()
         if (loader != null && context != null) {
             val viaApp = runCatching {
-                val f = Class.forName("fq.d", true, loader)
+                val f = Class.forName("qq.d", true, loader)
                     .getDeclaredMethod("f", Context::class.java)
                 f.isAccessible = true
                 (f.invoke(null, context) as? Int) ?: 0
@@ -661,7 +664,7 @@ object VivoSpaceAdapter : AppAdapter {
                 reservePxCache = viaApp
                 android.util.Log.println(
                     android.util.Log.INFO, "LiquidGlass",
-                    "$tag: reserve base (fq.d.f) = ${viaApp}px",
+                    "$tag: reserve base (qq.d.f) = ${viaApp}px",
                 )
                 return viaApp
             }
@@ -708,9 +711,10 @@ object VivoSpaceAdapter : AppAdapter {
         splashPendingStartMs = android.os.SystemClock.elapsedRealtime()
         runCatching { syncGlassOverlayWithPopup(activity) }
             .onFailure { facade.log(android.util.Log.WARN, "popup gate sync failed", it) }
-        // 图标帧预览（拖动悬停 = 选中动画末帧、原 tab = 首帧）：条目 ImageView 平时挂
+        // 图标帧预览（拖动悬停 = 选中动画末帧；被拖离的原 tab = 应用自身反选落定态，
+        // 见下方 previewIconUnselected 注入）：条目 ImageView 平时挂
         // 静态图，各 tab 的选中动画 LottieDrawable 存在底栏内部 item 状态表里，须经反射
-        // 取出交给引擎临时挂载驱动。混淆锚点（13.3.0.1）：VBottomNavigationView 字段
+        // 取出交给引擎临时挂载驱动。混淆锚点（13.3.0.1 与 13.6.0.1 同名）：VBottomNavigationView 字段
         // "B" = HashMap<条目, 状态>（声明在父类，需沿超类链查找）；状态对象 Lottie 字段
         // 按类型扫描（jadx 显示的 f12699c 是改名，真名 "c"，按名字查必失败）。进度方法
         // 运行时真名 "H(float)"（@FloatRange(0..1)；无 setProgress，R8 连 Lottie 库方法
@@ -722,6 +726,12 @@ object VivoSpaceAdapter : AppAdapter {
         session.previewIconProgress = { lottie, progress ->
             runCatching { driveTabFrame(lottie, progress) }
                 .onFailure { facade.log(android.util.Log.WARN, "preview frame drive failed", it) }
+        }
+        // 反选还原（液泡拖离原选中 tab）：应用自身 w(item) 原生语义换回未选中静态图。
+        // 该应用选中动画首帧仍带选中观感（帧驱动"首帧=未选中"假设不成立，实测翻车），
+        // 必须走应用反选落定通道；钩子失败由引擎回退首帧（不崩溃）。
+        session.previewIconUnselected = { index ->
+            runCatching { unselectTabIcon(session.tabContainer, index) }.getOrDefault(false)
         }
         // 常驻清扫已迁入进程级生命周期监视器（registerLifecycleSpy/startMonitor）:
         // v1.7 真机取证发现会话级调度链路的日志会被宿主冷启动日志风暴期的 logd 限流整段
@@ -802,6 +812,23 @@ object VivoSpaceAdapter : AppAdapter {
      *  还原把速度归零，全部失效），已踩坑（§4.7 教训 2）。 */
     private var tabFrameSetter: java.lang.reflect.Method? = null
     private var appClassLoader: ClassLoader? = null
+
+    /** 拖离原选中 tab 的反选还原 = 调应用自身 `VBottomNavigationView.w(item)`（jadx
+     *  13.6.0.1 方法体实证：y(false) + 动画播放中则停 + 状态表未选中静态图 res 非零经
+     *  条目 z(res) 换回静态图、为零才回退 lottie 首帧）。单锚点 = 方法真名 "w"
+     *  （protected，声明在父类 VBottomNavigationView——查找必须沿超类链，同字段 "B"
+     *  的教训），参数类型取条目运行时类（不硬编码混淆短名）。失效返回 false → 引擎
+     *  回退动画首帧（不崩溃）。 */
+    private fun unselectTabIcon(bar: View, index: Int): Boolean {
+        val item = findMenuLayout(bar)?.getChildAt(index) ?: return false
+        val w = generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+            .firstNotNullOfOrNull { cls ->
+                runCatching { cls.getDeclaredMethod("w", item.javaClass) }.getOrNull()
+            } ?: return false
+        w.isAccessible = true
+        w.invoke(bar, item)
+        return true
+    }
 
     /** 驱动 tab 选中动画到指定帧（0=首帧未选中，1=末帧选中）。 */
     private fun driveTabFrame(lottie: Any, progress: Float) {

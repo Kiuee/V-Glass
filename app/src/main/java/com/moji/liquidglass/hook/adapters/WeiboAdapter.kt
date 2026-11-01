@@ -238,7 +238,7 @@ object WeiboAdapter : AppAdapter {
     }
 
     /**
-     * 原底栏顶部 1px 阴影线（iv_bottom_shadow，0x7f0a1902 用户 dump 实证）：玻璃栏更高
+     * 原底栏顶部 1px 阴影线（iv_bottom_shadow）：玻璃栏更高
      * 且为胶囊形，它会从玻璃上边缘露出一条"边界线"。GONE 会被应用的启动/沉浸路径翻回
      * VISIBLE，故**从父布局移除真身**；但应用对它有多处裸引用（MainMaintabActor.G() 的
      * `findViewById(gf).setBackgroundColor(...)` 不判空；BaseMaintabActor.f(int) 还会
@@ -252,8 +252,11 @@ object WeiboAdapter : AppAdapter {
         if (activity == null) return
         runCatching {
             val decor = activity.window?.decorView as? ViewGroup ?: return
+            // getIdentifier 为主路径（微博资源未混淆）；硬编码仅兜底，值随版本漂移
+            // （16.10.0=0x7f0a1902、16.10.2=0x7f0a18fd），升版经 dexsql class_static_values
+            // 核对（主册 §0.6.2 步骤 B）。
             val id = decor.resources.getIdentifier("iv_bottom_shadow", "id", activity.packageName)
-                .takeIf { it != 0 } ?: 0x7f0a1902
+                .takeIf { it != 0 } ?: 0x7f0a18fd
             var replaced = 0
             fun walk(v: View?) {
                 if (v == null) return

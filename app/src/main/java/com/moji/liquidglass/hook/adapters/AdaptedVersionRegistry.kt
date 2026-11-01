@@ -5,7 +5,8 @@ package com.moji.liquidglass.hook.adapters
  * （锚点未漂移、机制未变），直接把 versionName 追加到对应包名的列表即可生效，
  * 不必逐个编辑适配器文件；应用页 chip 的已适配判定与展开列表会自动包含。
  *
- * 最终已适配列表 = 适配器内 `baselineVersions`（深度逆向适配的基准版本）
+ * 最终已适配列表 = 适配器内 `baselineVersions`（深度逆向适配的基准版本，即主册 §0.6.3
+ * 多版本兼容窗口成员——升版适配必须同时保证窗口内全部基线可用；本表免适配版本不计入窗口）
  * + 本表对应包名的追加版本，按序去重。
  * 若某次升版需要改适配代码，属于深度适配：更新适配器的 baselineVersions
  * 并同步 MAINTENANCE.md 对应章节的「基准版本」行。
@@ -23,6 +24,7 @@ object AdaptedVersionRegistry {
         "com.vivo.gallery" to listOf("10.2.9.2"),
         "com.sina.weibo" to listOf("16.10.1","16.10.2"),
         "com.xingin.xhs" to listOf("9.51.0"),
+        "com.autonavi.minimap" to listOf("17.02.0.2010")
 
     )
 }

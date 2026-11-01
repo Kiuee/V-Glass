@@ -198,6 +198,14 @@ object GalleryAdapter : AppAdapter {
         // 仅留作 A/B 实验；与事件驱动叠加时会节流内容信号，慎用
         session.glassRenderIntervalNs = config().glassRenderCapHz
             .takeIf { it > 0 }?.let { 1_000_000_000L / it } ?: 0L
+        // 拖离原选中 tab 的反选还原 = 应用自身 i(item) 原生语义（jadx 10.1.6.4 实证：
+        // setChecked(false) + 停动画 + 按状态表换回未选中图）。setChecked 不换图标——
+        // 选中观感由 bar 经 setItemSelected 挂选中 lottie@1f，仅 setChecked 时拖离后
+        // 原 tab 仍显选中（与 vivo 官网 w(item) 同构问题，教训见 №03.7 教训 10）；
+        // 钩子失败由引擎回退动画首帧（不崩溃）。
+        session.previewIconUnselected = { index ->
+            runCatching { unselectTabIcon(session, index) }.getOrDefault(false)
+        }
         // 取证：定时输出底栏可见性/透明度与门控输入，验证隐藏跟随是否生效
         for (delay in longArrayOf(2_000, 4_000, 6_000, 8_000, 10_000)) {
             handler.postDelayed({
@@ -219,6 +227,25 @@ object GalleryAdapter : AppAdapter {
     /** 仅主 Tab Activity 探测：OnlineAgentActivity 等页面也挂了同类底栏，避免误装。 */
     override fun shouldProbe(activity: Activity): Boolean =
         activity.javaClass.name == tabActivityClassName
+
+    /** 拖离原选中 tab 的反选还原 = 调应用自身 `VBottomNavigationView.i(item)`（jadx
+     *  10.1.6.4 方法体实证：setChecked(false) + 动画播放中则取消 + 按状态表逐级换回
+     *  未选中图（drawable → res → 未选中 lottie 播放 / 选中 lottie 回 0f）；应用的
+     *  选中路径 setItemSelected 对称地挂选中 lottie@1f）。单锚点 = 方法真名 `"i"`
+     *  （protected，声明在父类 VBottomNavigationView，沿超类链查找），参数取条目
+     *  运行时类（VNavMenuItem，不硬编码）。失效返回 false → 引擎回退动画首帧
+     *  （不崩溃）。 */
+    private fun unselectTabIcon(session: GlassSession, index: Int): Boolean {
+        val item = session.tabViews.getOrNull(index) ?: return false
+        val bar = session.tabContainer
+        val unselect = generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+            .firstNotNullOfOrNull { cls ->
+                runCatching { cls.getDeclaredMethod("i", item.javaClass) }.getOrNull()
+            } ?: return false
+        unselect.isAccessible = true
+        unselect.invoke(bar, item)
+        return true
+    }
 
     override fun findTabBar(content: ViewGroup): View? {
         val found = ArrayList<View>(1)
