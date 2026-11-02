@@ -59,8 +59,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   30dp → 玻璃槽位内下沉 8dp（文字经 paddingTop=0 中和后已居中，唯独发布键仍偏下）。
  *   装配时对发布键 ImageView 设 translationY=-8dp 抬回（不改布局无拉伸；按压缩放动画
  *   B4/k4 作用于容器 translationY，与 img 子视图互不冲突）。
+ * - **消息/我的页小白条区域内容（v2.6 页面容器导航衬垫归零）**：应用 SystemBarsManager
+ *   从 ROOT navigation insets（rootWindowInsets 直读）把小白条高度写入页面容器底部衬垫
+ *   （真机实证：消息页 = MessagePageView pb=54；我的页 = ProfileMainPageNoteInfoView
+ *   pb=54，塌陷装配期写入）——content 层派发 insets 清零（installContentInsetsZeroing）
+ *   拦不住 root 直读通路（两条 inset 通路必须分开处理，LiquidTab XhsMessageViewport
+ *   定案），页面布局盒被衬垫整体抬离玻璃栏区 = 小白条区域无内容。列表余量 pass 同一轮
+ *   DFS 内嵌 viewport 归零（applyViewportFit：槽位 3 类名锚点 + 值驱动 [inset/2, inset]
+ *   任意大容器兜底；发现记录原值清零、重申、离页还原）+ decor OnGlobalLayout 布局重申
+ *   （装配期 60ms 追频 / 稳态 O(k) 廉价快路径）+ 列表余量单调化（只增不减，塌陷收缩期
+ *   零改写零重布局）——v2.5 只修了余量 pass 误伤 ViewPager2 内部容器的布局抬离，衬垫
+ *   这一显示层根因由 v2.6 补齐。
  * - installAppHooks（v2.4 共 3 个行为 hook）：①`TabView.setSelected` after → 储备
- *   重扫/列表余量触发（应用切页信号 J0 的落点，300ms 防抖）；②切页入口 after → 切页
+ *   重扫/列表余量/页面容器衬垫归零触发（应用切页信号 J0 的落点，300ms 防抖）；②切页入口 after → 切页
  *   同步重放（replayShowPage，候选链 9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2）；③切页延迟体
  *   invoke before → 按序号陈旧性自行吞咽（swallowStaleDeferredBody，候选链 ntc.l /
  *   n4d.l）——应用守卫第二条件是商城 tab 开关配置位，配置 false 时序号守卫失效，空闲
@@ -124,6 +135,12 @@ object XhsAdapter : AppAdapter {
      *  加 paddingBottom 会把整页内容抬离玻璃栏区（RecyclerView 子项在 padding 盒内布局，
      *  clipToPadding 只影响裁剪不影响布局盒），须整类排除（见 isViewPager2Scoped）。 */
     private const val VIEW_PAGER_2_CLASS = "androidx.viewpager2.widget.ViewPager2"
+
+    /** 消息页根视图（非混淆类名，LiquidTab 同款锚点）：应用 SystemBarsManager 从
+     *  ROOT navigation insets（rootWindowInsets 直读）把小白条高度写入其 paddingBottom——
+     *  content 层派发 insets 清零（installContentInsetsZeroing）拦不住该通路，视图层归零
+     *  是唯一解（见 viewportFits / applyViewportFit）。 */
+    private const val MESSAGE_PAGE_CLASS = "com.xingin.im.v2.message.MessagePageView"
 
     // —— 应用切页管线（controller = 首页 ContentViewController，反编译实证；9.52.1 =
     //    ntc.p（classes19）、9.50.0 = n4d.n（classes13）——9.52.1 整包迁移 n4d→ntc 且成员
@@ -215,6 +232,12 @@ object XhsAdapter : AppAdapter {
 
     private val sweepHandler = Handler(Looper.getMainLooper())
     private val sweepScheduled = AtomicBoolean(false)
+
+    /** 列表余量/衬垫 pass 调度合并标志（v2.6.3）：拖动预览连翻/冷启动初选中会在同帧多次
+     *  触发 scheduleListPass——立即轮与补扫对各自 pending 合并，同窗多次触发只跑一轮
+     *  DFS（全 decor 遍历是适配器侧最贵的主线程工作，预览连翻期间逐次直跑曾成突发）。 */
+    private val listPassImmediateScheduled = AtomicBoolean(false)
+    private val listPassBackstopScheduled = AtomicBoolean(false)
 
     /** 当前活跃会话（onSessionCreated 写入）：列表余量/选中读数等会话期操作用。 */
     @Volatile
@@ -358,6 +381,132 @@ object XhsAdapter : AppAdapter {
 
     /** 消息/我的页被动态加过底部余量的列表（弱引用，离开页面还原）。 */
     private val paddedLists = java.util.WeakHashMap<View, ListPaddingState>()
+
+    /** 页面容器导航衬垫原值（v2.6）：应用从 ROOT insets 直写 paddingBottom/bottomMargin
+     *  （rootWindowInsets 通路，派发 insets 清零无效），离开页面按此还原；弱引用随视图
+     *  丢弃。 */
+    private data class ViewportFitState(val paddingBottom: Int, val bottomMargin: Int)
+
+    /** 已归零衬垫的页面容器（弱引用，离开页面还原）。 */
+    private val viewportFits = java.util.WeakHashMap<View, ViewportFitState>()
+
+    /** viewport 衬垫锚点失配告警只发一次（№03.7 教训 11 口径：降级路径必须有日志，
+     *  但不过量刷屏）；命中锚点后复位。 */
+    private var viewportAnchorWarned = false
+
+    /** 布局变化重申（v2.6.1，v2.6.2 拆廉价快路径）：我的页症状是"上滑一段距离（头部
+     *  塌陷）后才出现"——塌陷时刻应用才写入导航衬垫，滚动期间事件驱动 pass 拦不住。
+     *  decor OnGlobalLayout 在任何布局变化（含 setPadding 的 requestLayout）时回调：
+     *  - 廉价路径（默认）：只重零已知衬垫根 + 已知列表余量重算（O(k)，无 DFS）；配合
+     *    单调余量（只增不减），滚动稳态零写入零重布局
+     *  - 全量 pass：当前槽位尚未发现衬垫（≤60ms 追频，页面装配期）或 1.5s 兜底
+     *  自收敛：我们清零触发的回调里值已为 0、无写入不再布局。槽位离开即摘除。
+     */
+    private val layoutReassert = object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+        override fun onGlobalLayout() {
+            reassertTick()
+        }
+    }
+
+    /** 全量 pass 节拍基准（事件驱动 pass 与 reassert 共用）。 */
+    @Volatile
+    private var lastFullPassUptime = 0L
+
+    /** 当前 reassert 所在槽位与"该槽位是否已发现过衬垫根"（发现后 reassert 走廉价路径）。 */
+    @Volatile
+    private var lastPassSlot = -1
+
+    @Volatile
+    private var slotFitFound = false
+
+    @Volatile
+    private var reassertAttachedTo: java.lang.ref.WeakReference<View>? = null
+
+    private fun ensureLayoutReassert(activity: Activity) {
+        val decor = activity.window?.decorView ?: return
+        if (reassertAttachedTo?.get() === decor) return
+        detachLayoutReassert()
+        decor.viewTreeObserver.addOnGlobalLayoutListener(layoutReassert)
+        reassertAttachedTo = java.lang.ref.WeakReference(decor)
+    }
+
+    private fun detachLayoutReassert() {
+        val decor = reassertAttachedTo?.get() ?: return
+        runCatching { decor.viewTreeObserver.removeOnGlobalLayoutListener(layoutReassert) }
+        reassertAttachedTo = null
+    }
+
+    /**
+     * reassert 回调主体：廉价路径重零已知根 + 已知列表余量重算；全量 pass 仅在当前槽位
+     * 尚未发现衬垫（页面装配期 60ms 追频——发现 pass 的节流窗口内漏出的应用装配期衬垫
+     * 写入在此补清，首开小白条区空白收敛到不可感知）或 1.5s 兜底时执行。全部自捕获
+     * （布局回调异常会上抛宿主）。
+     */
+    private fun reassertTick() {
+        val session = activeSession ?: return
+        runCatching {
+            val slot = session.selectedTabIndex()
+            if (slot != 3 && slot != 4) return
+            val now = android.os.SystemClock.uptimeMillis()
+            val needFull = (slotFitFound.not() && now - lastFullPassUptime >= 60L) ||
+                now - lastFullPassUptime >= 1500L
+            if (needFull) {
+                applyListPaddingPass()
+            } else {
+                rezeroKnownFits()
+                recomputeKnownLists()
+            }
+        }
+    }
+
+    /** 已知衬垫根重零（O(k)）：应用对已发现根的写回（塌陷期/装配期）在此当帧清零。 */
+    private fun rezeroKnownFits() {
+        for ((root, _) in viewportFits) {
+            val group = root as? ViewGroup
+            if (root.paddingBottom != 0) {
+                root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, 0)
+            }
+            val params = group?.layoutParams as? ViewGroup.MarginLayoutParams
+            if (params != null && params.bottomMargin != 0) {
+                params.bottomMargin = 0
+                group.layoutParams = params
+            }
+        }
+    }
+
+    /** 已知列表余量重算（O(k)）：几何随头部塌陷变化时按单调口径补写（只增不减）。 */
+    private fun recomputeKnownLists() {
+        val session = activeSession ?: return
+        val bar = session.tabContainer
+        val barLoc = IntArray(2).also(bar::getLocationInWindow)
+        val gap = (12f * bar.resources.displayMetrics.density).toInt()
+        for ((list, state) in paddedLists) {
+            if (!list.isShown) continue
+            applyListClearance(list, state, barLoc, gap)
+        }
+    }
+
+    /** 单调余量落笔（v2.6.2）：wanted = max(原值, 当前 clearance, 已应用值)——头部塌陷使
+     *  clearance 收缩时不再回写小值，滚动稳态零改写（v2.6.1 每拍收缩改写 = 每次触发
+     *  RecyclerView 整体重布局，真机滚动卡顿根因）。激活期内 padding 单调增；离开页面
+     *  restore 还原原值，重进重新计。 */
+    private fun applyListClearance(
+        view: View,
+        state: ListPaddingState,
+        barLoc: IntArray,
+        gap: Int,
+    ) {
+        val listLoc = IntArray(2).also(view::getLocationInWindow)
+        val clearance = (listLoc[1] + view.height - barLoc[1] + gap).coerceAtLeast(0)
+        val wanted = maxOf(state.bottom, clearance, state.applied)
+        if (view.paddingBottom != wanted) {
+            view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, wanted)
+        }
+        state.applied = wanted
+        (view as? ViewGroup)?.let { group ->
+            if (group.clipToPadding) group.clipToPadding = false
+        }
+    }
 
     override val descriptor: TabBarDescriptor = TabBarDescriptor(
         containerClassName = BAR_CLASS,
@@ -863,6 +1012,10 @@ object XhsAdapter : AppAdapter {
      * 上重写 insets 派发，把 navigationBars 底部置 0（状态栏/刘海/IME 不动）——页面自己
      * 想吃导航栏 inset 也拿不到，全页强制全出血（消息/我的页玻璃区有内容的前提）。仅装配
      * 时设置一次；视图树重建经 isStale 重装路径自然重设。
+     *
+     * v2.6 通路限定：本清零只改写**派发** insets；应用经 rootWindowInsets **直读**的
+     * 通路（SystemBarsManager → 页面容器 paddingBottom 衬垫）不受影响，由列表余量 pass
+     * 内嵌的 applyViewportFit 在视图层归零（两条通路必须分开处理，LiquidTab 定案）。
      */
     private fun installContentInsetsZeroing(activity: Activity) {
         runCatching {
@@ -886,6 +1039,8 @@ object XhsAdapter : AppAdapter {
      * paddingBottom 加"列表底缘到栏顶 + 12dp"的余量并关 clipToPadding，滚动时内容可穿透
      * 绘制进玻璃区；离开页面还原原值。RecyclerView 判定沿类层次向上找 androidx/support
      * 实现（消息/我的页的列表都是其子类）；不下钻列表内部（行内嵌套轮播不处理）。
+     * v2.6 起同一轮 DFS 内嵌页面容器导航衬垫归零（applyViewportFit，与余量 pass 共用
+     * 切页触发/补扫节奏），并对锚点全程未命中打一次性 WARN（№03.7 教训 11 口径）。
      */
     private fun applyListPaddingPass() {
         val session = activeSession ?: return
@@ -895,8 +1050,17 @@ object XhsAdapter : AppAdapter {
             val slot = session.selectedTabIndex()
             if (slot != 3 && slot != 4) {
                 restoreListPadding(facade)
+                restoreViewportFits(facade)
+                detachLayoutReassert()
+                lastPassSlot = -1
+                slotFitFound = false
                 return
             }
+            if (slot != lastPassSlot) {
+                lastPassSlot = slot
+                slotFitFound = false
+            }
+            lastFullPassUptime = android.os.SystemClock.uptimeMillis()
             val bar = session.tabContainer
             val barLoc = IntArray(2).also(bar::getLocationInWindow)
             val gap = (12f * bar.resources.displayMetrics.density).toInt()
@@ -915,18 +1079,27 @@ object XhsAdapter : AppAdapter {
                     val state = paddedLists.getOrPut(view) {
                         ListPaddingState(view.paddingBottom, group?.clipToPadding ?: true, view.paddingBottom)
                     }
-                    val listLoc = IntArray(2).also(view::getLocationInWindow)
-                    val clearance = (listLoc[1] + view.height - barLoc[1] + gap).coerceAtLeast(0)
-                    val wanted = maxOf(state.bottom, clearance)
-                    if (view.paddingBottom != wanted) {
-                        view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, wanted)
-                    }
-                    state.applied = wanted
-                    if (group != null && group.clipToPadding) group.clipToPadding = false
+                    applyListClearance(view, state, barLoc, gap)
                     continue // 不下钻列表内部
                 }
+                // 页面容器导航衬垫归零（v2.6）：命中只记录+清零，照常下钻——页面根内部
+                // 的真实列表仍由上方余量分支处理
+                if (applyViewportFit(view, bar)) slotFitFound = true
                 if (view is ViewGroup) for (i in 0 until view.childCount) stack.add(view.getChildAt(i))
             }
+            // 锚点缺失一次性告警（教训 11：执行层在跑但逻辑未命中须可区分）；命中后复位，
+            // 页面晚挂载场景的后续 pass 可重新评估
+            if (viewportFits.isNotEmpty()) {
+                viewportAnchorWarned = false
+            } else if (!viewportAnchorWarned) {
+                viewportAnchorWarned = true
+                facade.log(
+                    android.util.Log.WARN,
+                    "xhs viewport fit: no anchor found yet (slot=$slot, late mount or anchor drifted?)",
+                )
+            }
+            // 滚动期间衬垫写入的拦截通道（v2.6.1，见 layoutReassert 注释）
+            ensureLayoutReassert(activity)
         }.onFailure { facade.log(android.util.Log.WARN, "xhs list padding pass failed", it) }
     }
 
@@ -941,6 +1114,105 @@ object XhsAdapter : AppAdapter {
             }
             paddedLists.clear()
         }.onFailure { facade.log(android.util.Log.WARN, "xhs list padding restore failed", it) }
+    }
+
+    /**
+     * 页面容器导航衬垫归零（v2.6，LiquidTab XhsMessageViewport 定案迁移；v2.6.1 值驱动
+     * 补位；v2.6.3 清理：移除槽位 4 ViewPager2 结构锚点——真机实证其 pb=mb=0 空命中，
+     * 真衬垫承载者由值驱动覆盖）：应用 SystemBarsManager 从 ROOT navigation insets
+     * （rootWindowInsets 直读）把小白条高度写入页面容器底部衬垫——content 层派发 insets
+     * 清零（installContentInsetsZeroing）只改下发值、拦不住 root 直读通路，页面布局盒被
+     * 衬垫整体抬离玻璃栏区 = 小白条区域无内容。命中两级：①类名锚点——槽位 3（消息页）
+     * = MessagePageView 非混淆类名（真机实证 pb=54 即小白条 inset）；②值驱动——任何
+     * 尺寸达标容器，底部 padding/margin ∈ [inset/2, inset] 即按衬垫处理（覆盖"上滑头部
+     * 塌陷时才写入"的滚动期承载者，配合 layoutReassert 拦截）。发现即记录原值并归零，
+     * 每次 pass 重申（应用写回再清），离开页面由 restoreViewportFits 还原。与列表余量
+     * 分支无交集：RecyclerView 命中上方分支后 continue，不会走到本函数；ViewPager2 内部
+     * RecyclerViewImpl 由 isViewPager2Scoped 排除余量误伤。
+     */
+    private fun applyViewportFit(view: View, bar: View): Boolean {
+        val anchorHit = view.javaClass.name == MESSAGE_PAGE_CLASS
+        val valueHit = !anchorHit && isNavFitByValue(view, bar)
+        if (!anchorHit && !valueHit) return false
+        return recordAndZeroFit(view)
+    }
+
+    /** 衬垫记录+归零：首次发现记原值打取证日志（logcat），随后清零 pb/mb。 */
+    private fun recordAndZeroFit(view: View): Boolean {
+        val group = view as? ViewGroup
+        viewportFits.getOrPut(view) {
+            val recorded = ViewportFitState(
+                view.paddingBottom,
+                group?.layoutParams.let { p -> (p as? ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0 },
+            )
+            hookFacade?.log(
+                android.util.Log.INFO,
+                "xhs viewport fit cleared: ${view.javaClass.name} " +
+                    "pb=${recorded.paddingBottom} mb=${recorded.bottomMargin}",
+            )
+            recorded
+        }
+        if (view.paddingBottom != 0) {
+            view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, 0)
+        }
+        if (group != null) {
+            val params = group.layoutParams as? ViewGroup.MarginLayoutParams
+            if (params != null && params.bottomMargin != 0) {
+                params.bottomMargin = 0
+                group.layoutParams = params
+            }
+        }
+        return true
+    }
+
+    /**
+     * 值驱动衬垫判定：底部 paddingBottom/bottomMargin ∈ [inset/2, inset] 且视图尺寸
+     * 达标（同列表守卫），即视为导航衬垫承载者。v2.6.2 区间收紧（原 (0, inset] 误伤
+     * `UserAvatarCardView mb=6` 这类小余量，真机 trace 实证）。排除 paddedLists 在册
+     * 视图——那里是我们自己写的余量值（clearance），不是应用衬垫。inset 上限 300px
+     * 防串扰（<30 API 的 systemWindowInsetBottom 会混入 IME 高度，混入即超限自动禁用
+     * 本判定，fail-open）。
+     */
+    private fun isNavFitByValue(view: View, bar: View): Boolean {
+        if (view.height <= bar.height * 2 || view.width <= bar.width / 2) return false
+        if (paddedLists.containsKey(view)) return false
+        val inset = navInsetOf(view) ?: return false
+        val group = view as? ViewGroup
+        val mb = (group?.layoutParams as? ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+        return view.paddingBottom in (inset / 2)..inset || mb in (inset / 2)..inset
+    }
+
+    /** 导航条 inset（rootWindowInsets 直读——与应用写入衬垫的取值同源）；无值或超 300px
+     *  （IME 混入等）返回 null 禁用值驱动。 */
+    private fun navInsetOf(view: View): Int? = runCatching {
+        val insets = view.rootWindowInsets ?: return null
+        val bottom = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+        } else {
+            @Suppress("DEPRECATION")
+            insets.systemWindowInsetBottom
+        }
+        bottom.takeIf { it in 1..300 }
+    }.getOrNull()
+
+    /** 离开消息/我的页还原衬垫原值（与 restoreListPadding 同节奏，槽位离开分支调用）。 */
+    private fun restoreViewportFits(facade: HookFacade) {
+        if (viewportFits.isEmpty()) return
+        runCatching {
+            for ((root, state) in viewportFits) {
+                if (root.paddingBottom == 0 && state.paddingBottom != 0) {
+                    root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, state.paddingBottom)
+                }
+                (root as? ViewGroup)?.let { group ->
+                    val params = group.layoutParams as? ViewGroup.MarginLayoutParams
+                    if (params != null && params.bottomMargin == 0 && state.bottomMargin != 0) {
+                        params.bottomMargin = state.bottomMargin
+                        group.layoutParams = params
+                    }
+                }
+            }
+            viewportFits.clear()
+        }.onFailure { facade.log(android.util.Log.WARN, "xhs viewport fit restore failed", it) }
     }
 
     private fun isRecyclerList(view: View): Boolean {
@@ -975,12 +1247,23 @@ object XhsAdapter : AppAdapter {
         return false
     }
 
-    /** 列表余量补扫：切页后立即 + 0.8/1.5s 各一次（列表晚挂载；LiquidTab 以 250ms 周期
-     *  pre-draw 扫描，这里保持事件驱动口径——只在新挂载窗口内补扫，静止零开销）。 */
+    /** 列表余量补扫：切页后立即（post 合并）+ 0.8/1.5s 各一次（列表晚挂载；LiquidTab 以
+     *  250ms 周期 pre-draw 扫描，这里保持事件驱动口径——只在新挂载窗口内补扫，静止零
+     *  开销）。立即轮 post 到下一轮消息循环：同帧多次触发合并为一轮 DFS。 */
     private fun scheduleListPass() {
-        applyListPaddingPass()
-        sweepHandler.postDelayed({ applyListPaddingPass() }, 800L)
-        sweepHandler.postDelayed({ applyListPaddingPass() }, 1500L)
+        if (listPassImmediateScheduled.compareAndSet(false, true)) {
+            sweepHandler.post {
+                listPassImmediateScheduled.set(false)
+                applyListPaddingPass()
+            }
+        }
+        if (listPassBackstopScheduled.compareAndSet(false, true)) {
+            sweepHandler.postDelayed({
+                listPassBackstopScheduled.set(false)
+                applyListPaddingPass()
+            }, 800L)
+            sweepHandler.postDelayed({ applyListPaddingPass() }, 1500L)
+        }
     }
 
     /**
