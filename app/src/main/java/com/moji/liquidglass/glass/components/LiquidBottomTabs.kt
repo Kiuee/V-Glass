@@ -282,7 +282,12 @@ fun LiquidBottomTabs(
         CompositionLocalProvider(
             LocalLiquidBottomTabScale provides {
                 lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
-            }
+            },
+            // 折射副本行**不受液泡覆盖槽位抑制**（恒 false）：抑制只应隐藏可见行的
+            // 原位镜像（防按压重影），折射副本行是液泡 lens 的采样源——若一并抑制，
+            // 液泡滑到两槽之间时可见行与副本同时为空 = 图标整段消失（suppress
+            // 声明方小黑盒真机实证）。默认无人消费 = 零影响（§0.4）。
+            LocalLiquidBottomTabBubbleCovered provides { false },
         ) {
             Row(
                 Modifier

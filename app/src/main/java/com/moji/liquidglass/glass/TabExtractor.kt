@@ -96,6 +96,25 @@ data class TabBarDescriptor(
      *  底部 51dp）居中镜像会把条目底部（标签）裁出槽位，按应用声明改底对齐——条目
      *  底边贴槽位底边（与原生布局关系一致），超出槽位的只有条目顶部空白边。 */
     val wholeTabAlignBottom: Boolean = false,
+    /** 附加操作按钮（默认 null = 既有应用逐位不变，§0.4 红线）。声明后玻璃栏右侧
+     *  出现一枚**独立**的方形着色玻璃图标按钮（参考项目 Glass Bottom Bar 教程
+     *  "Exercise: Add a tinted glass icon button" 同构：栏与按钮平行同高、8dp 间距、
+     *  各自独立胶囊、同一采样源 + 同一 GlassStyle 模糊/饱和/折射参数；表面 = tint
+     *  Hue 混合 + 0.75 alpha 覆盖 + 应用图标），不参与选中读数/预览翻转/镜像，仅
+     *  点击转发；栏宽可用量扣除按钮 + 间距。用于原生底栏之外、但视觉上属于底栏
+     *  区域的操作元素（如悬浮发布键）。 */
+    val extraActionButton: ExtraActionButtonSpec? = null,
+)
+
+/** 附加操作按钮声明（[TabBarDescriptor.extraActionButton]）：全部取值为闭包实时解析，
+ *  换肤/深浅色切换自动跟随；不做任何适配器外的应用常量假设。 */
+data class ExtraActionButtonSpec(
+    /** 图标（每次绘制实时解析；null = 该帧不绘制图标，按 intrinsic 像素 1:1 居中）。 */
+    val icon: () -> android.graphics.drawable.Drawable?,
+    /** 表面着色强调色（每次绘制实时解析；null = 纯玻璃无着色）。 */
+    val accent: () -> androidx.compose.ui.graphics.Color?,
+    /** 点击转发（复刻原生点击语义，如对原生视图 performClick）。 */
+    val onClick: () -> Unit,
 )
 
 /**

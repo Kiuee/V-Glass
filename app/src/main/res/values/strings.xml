@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">液态玻璃底栏</string>
+    <!-- 模块描述（LSPosed 显示用）。现代模块（含 META-INF/xposed/java_init.list）经
+         <application android:description> → ApplicationInfo.loadDescription 读取；
+         经典模块经 meta-data xposeddescription 读取（值可写资源引用，框架会按 resId 解析）。
+         本模块双入口并存，两处都指向同一资源，避免双份描述漂移。 -->
+    <string name="xposed_description">vivo液态玻璃底栏</string>
 
     <!-- 底部导航 -->
     <string name="home">主页</string>

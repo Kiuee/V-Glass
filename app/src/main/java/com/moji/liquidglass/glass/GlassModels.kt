@@ -213,6 +213,18 @@ class GlassSession(
     /** 选中 tab 的进入动画是否进行中（事件驱动模式下帧循环据此自驱 tick）。 */
     val tabAnimating: Boolean get() = animLottie != null
 
+    /** 静止降帧两档驱动 + 高刷减半分频（适配器声明，默认 false = 每帧 tick，既有应用
+     *  逐位不变 §0.4）：true 时帧循环按"活动窗口内满帧率、静止 30fps 低频"两档 tick，
+     *  且高刷屏（实测平均 >66Hz）玻璃满帧率档**按帧计数减半分频**（偶数帧 tick，任意
+     *  刷新率恒整数倍零拍频；120 帧窗口重估，LTPO 动态刷新率自动跟随）。
+     *  **前提 = 适配器已接内容活动信号**（内容重绘/交互 → [armActivityWindow]）——
+     *  静止档只有 30fps 采样，无信号的内容变化滞后 ≤33ms 由低频档自愈，持续无信号的
+     *  内容变化则持续滞后。适用 = 采样开销大的应用（重内容页/整条目镜像 + 逐帧
+     *  lottie 镜像）：满帧率采样在重页面上与宿主自绘叠加挤占帧预算 = 滑动卡顿，
+     *  两档化后静止开销降 ~90%、滚动期信号升档 + 分频减半保流畅。 */
+    @Volatile
+    var idleDecayTickEnabled: Boolean = false
+
     // —— 相册的"静止降帧"档位：每帧渲染模式下，内容活动（GLRootView.onDraw）或底栏
     //    交互（点击/预览/选中同步/样式变化）后的窗口期内满帧率；静止后降到
     //    [STATIC_TICK_INTERVAL_MS]（30fps，GlassRoot 帧循环门控）。与旧事件驱动的本质

@@ -4,6 +4,7 @@ import android.view.View
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -30,6 +32,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -38,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.paint
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
@@ -51,18 +55,29 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.util.fastCoerceAtMost
 import androidx.compose.ui.util.lerp
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.highlight.Highlight
 import com.kyant.shapes.Capsule
 import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
 import com.moji.liquidglass.glass.components.LiquidBottomTabs
+import com.moji.liquidglass.glass.utils.InteractiveHighlight
 import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.roundToInt
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.tanh
 
 /**
  * 玻璃底栏（覆盖层模式的条带布局）。
@@ -187,10 +202,15 @@ fun GlassRoot(
         var sumNs = 0L
         var maxNs = 0L
         var ticks = 0L
+        // 帧序号（单调递增，高刷减半分频的相位源）与分频值（120 帧窗口按实测平均
+        // 帧间隔重估，LTPO 动态刷新率下自动跟随）
+        var frameIndex = 0L
+        var halfRateDivider = 1
         while (true) {
             val now = withFrameNanos { it }
             val gapNs = now - lastFrame
             lastFrame = now
+            frameIndex++
             frames++
             sumNs += gapNs
             if (gapNs > maxNs) maxNs = gapNs
@@ -199,6 +219,14 @@ fun GlassRoot(
                     "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms " +
                         "ticks=$ticks"
                 )
+                // 高刷减半分频判定（idleDecay 会话）：**实测平均帧间隔**而非
+                // display.refreshRate 一次性采样——LTPO 动态刷新率下后者随状态漂移
+                // （重进应用/页面切换时 120/90/60 读数各异，一次性判定失真且跨会话
+                // 不一致）；分频按**帧计数**（偶数帧 tick）不按 ns 时长——任意刷新率下
+                // 恒为整数倍、零拍频（ns 门控在非整数比率下必拍频，相册教训）
+                halfRateDivider = if (session.idleDecayTickEnabled &&
+                    sumNs > 0L && 1_000_000_000L / (sumNs / 120) > 66L
+                ) 2 else 1
                 frames = 0
                 sumNs = 0
                 maxNs = 0
@@ -217,18 +245,32 @@ fun GlassRoot(
             // 下由内容重绘脏标记驱动——脏标记在 vsync 的动画回调阶段转换为 tick（先于
             // traversal），玻璃与应用内容同帧绘制；静止（无信号）零重绘，Surface/视图/
             // 硬件层更新不再闪烁、空闲不烧 GPU。仅选中 tab 进入动画期间自驱。
-            // 相册 tickEventDriven=false：内容/交互活动窗口内每帧（满帧率转播图标/光效
-            // 动画、跟随滚动），静止后降 30fps 低频 tick——低频档仍持续采样，GL 合成空窗
-            // 的空白帧最多停留 ~33ms 自愈（不会像纯事件驱动那样冻帧），省下大部分空闲开销
-            val fullRate = !session.tickEventDriven || contentDirty[0] ||
-                session.tabAnimating || session.contentActive
+            // 静止降帧两档（idleDecayTickEnabled，相册设计/小黑盒首接线）：tickEventDriven=
+            // false 且已接内容活动信号的会话，活动窗口（内容重绘/交互 armActivityWindow
+            // 后 1s）内每帧，静止后降 30fps 低频 tick——低频档仍持续采样，合成空窗的
+            // 空白帧最多停留 ~33ms 自愈（不会像纯事件驱动那样冻帧），省下大部分空闲开销。
+            // **无信号源不得开启**：静止档跟不上无信号的内容变化（持续滞后）。
+            // 注意：`!tickEventDriven && !idleDecayTickEnabled` 兜底项 = 无信号会话的
+            // 每帧恒满档——旧表达式（!tickEventDriven || …）曾使两档设计从未生效
+            // （tickEventDriven=false 恒真短路，静止降帧档不可达，adc56c0 起的潜伏回归）。
+            val fullRate = contentDirty[0] || session.tabAnimating || session.contentActive ||
+                (!session.tickEventDriven && !session.idleDecayTickEnabled)
             if (!fullRate && session.shouldIdleYield(now / 1_000_000L, contentDirty[0])) {
                 // 静止空闲让步：本帧不 tick，给宿主主队列留出 IdleHandler 冲刷间隙
                 // （见 GlassSession.shouldIdleYield）
             } else if (fullRate) {
                 contentDirty[0] = false
                 val renderInterval = session.glassRenderIntervalNs
-                if (!session.tickEventDriven || renderInterval <= 0L || now - tickGate[0] >= renderInterval) {
+                // renderInterval 仅事件驱动会话生效（adc56c0 起既有语义——ns 时长门控
+                // 在非整数刷新率比率下拍频，非事件驱动会话的节流走 idleDecay 两档 +
+                // 高刷减半分频；曾试改为对所有会话生效，相册残留 capHz 配置被激活拍频，
+                // 真机回退）
+                val intervalOk = !session.tickEventDriven || renderInterval <= 0L ||
+                    now - tickGate[0] >= renderInterval
+                // 高刷减半分频（idleDecay 会话）：偶数帧才 tick——玻璃条带重录制与
+                // Compose traversal 减半，宿主自绘/液泡/按压/选中动画读各自状态独立
+                // 失效不受影响；8dp 模糊下玻璃 60fps 无感
+                if (intervalOk && (halfRateDivider <= 1 || frameIndex % halfRateDivider == 0L)) {
                     tickGate[0] = now
                     tick.intValue++
                     ticks++
@@ -330,16 +372,30 @@ fun GlassRoot(
         // 舒适宽度上限按 descriptor 覆盖（tab 极少且原生条目远宽于 70dp 槽位的应用，
         // 默认 null = 全局值，其余应用逐位不变）
         val maxTabWidthDp = session.extractor.descriptor.maxTabWidthDp ?: MAX_TAB_WIDTH_DP
+        // 附加操作按钮（descriptor 声明式通道，默认 null = 既有应用零影响）：玻璃栏右侧
+        // 独立圆形着色玻璃图标按钮（参考项目 Glass Bottom Bar 教程 "Exercise: Add a
+        // tinted glass icon button" 同构：Row spacedBy(8dp)，栏与按钮平行等高，按钮
+        // size = 栏高、aspectRatio 1f 外接方盒 + CircleShape 圆形玻璃）。声明时栏宽
+        // 可用量扣除 按钮直径（= 栏高）+ 间距；通道 null 时布局与旧实现逐位不变（§0.4 红线）。
+        val actionButton = session.extractor.descriptor.extraActionButton
         val barWidth = min(
-            maxWidth - style.minHorizontalMarginDp.dp * 2,
+            maxWidth - style.minHorizontalMarginDp.dp * 2 -
+                (if (actionButton != null) style.barHeightDp.dp + 8.dp else 0.dp),
             (spec.tabs.size * maxTabWidthDp + 8).dp
         ).coerceAtLeast(0.dp)
+        // 相邻玻璃耦合（库内置 CombinedBackdrop 采样，仅声明按钮时启用）：**单向**——
+        // 栏录制为采样层，按钮采样 combined(内容, 栏层)，按钮边缘 lens 折射栏体。
+        // **禁止双向**（栏再采样按钮层）：layerBackdrop 录制的内容又去消费它 = 跨层
+        // 绘制环 → RenderThread SIGSEGV 无限递归（backdrop 官方 FAQ 点名的已知崩溃，
+        // 真机实证；单向时被采样层的内容只消费原始 backdrop，环消失）。层未录制的
+        // 首帧空采样 ≤ 1 帧（气泡既有行为，可接受）。
+        val barLayer = rememberLayerBackdrop()
+        val buttonBackdrop = rememberCombinedBackdrop(backdrop, barLayer)
         // 应用声明隐藏底栏时（大图详情等二级页面）整条玻璃栏不渲染（与原生一致，且零绘制成本）
         if (barWanted) {
-    Box(
+    Row(
         Modifier
             .align(Alignment.BottomCenter)
-            .width(barWidth)
             .padding(
                 bottom = with(density) {
                     // 底部间隙支持负值（玻璃栏下沉贴齐小白条本体，导航区域顶 = inset），
@@ -356,8 +412,19 @@ fun GlassRoot(
                             scaleX = scale
                             scaleY = scale
                         }
-                    }
-            ) {
+                    },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .width(barWidth)
+                .then(
+                    // 栏体录制为采样层：供右侧按钮折射（仅声明按钮时；单向——栏自身
+                    // 只消费原始 backdrop，见上方耦合注释）
+                    if (actionButton != null) Modifier.layerBackdrop(barLayer) else Modifier
+                )
+        ) {
                 LiquidBottomTabs(
                     selectedTabIndex = { selectedIndex },
                     onTabSelected = { index ->
@@ -602,6 +669,12 @@ fun GlassRoot(
                     }
                 )
             }
+            // 附加操作按钮：栏右侧独立圆形着色玻璃图标按钮（参考项目教程同构：
+            // Row spacedBy(8dp) + 等高 CircleShape 圆形 + aspectRatio 1f 外接盒）
+            if (actionButton != null) {
+                ExtraActionButton(actionButton, buttonBackdrop, style, tick, style.barHeightDp.dp)
+            }
+        }
         }
     }
     }
@@ -627,6 +700,131 @@ private data class AuxGlassBounds(
     val heightPx: Int,
     val view: View,
 )
+
+/**
+ * 附加操作按钮（extraActionButton 声明式通道）：玻璃栏右侧的**独立**圆形着色玻璃
+ * 图标按钮，参考项目 Glass Bottom Bar 教程 "Exercise: Add a tinted glass icon button"
+ * 同构——栏与按钮平行等高、Row spacedBy(8dp)、按钮 size = 栏高（aspectRatio 1f 外接
+ * 方盒）+ `CircleShape` 圆形玻璃；同一采样源（[backdrop] = 内容 + 栏层的组合，相邻
+ * 耦合见调用点）+ 同一 GlassStyle 模糊/饱和/折射参数（样式页热生效一致），表面 =
+ * `tint` Hue 混合 + 0.75 alpha 覆盖（参考配方原样；tint 为 null = 纯玻璃不着色），
+ * 内容 = 应用图标逐帧绘制（intrinsic 像素 1:1 居中，超盒等比收缩）。
+ *
+ * 液态交互 = catalog 源码 **LiquidButton 逐字移植**（驱动 = InteractiveHighlight 移植件
+ * pressProgress/offset，demo 手感含按压回弹以其弹簧为准）：
+ * - layerBlock = 官方公式逐字：按压缩放（4dp/高）+ tanh 跟随平移（maxOffset = 短边、
+ *   initialDerivative = 0.05）+ 拖拽方向性拉伸（maxDragScale = 4dp/高按偏移轴比线性）
+ *   ——内容变形而采样背景不跟随；
+ * - 高光随按压渐入（`Highlight.Default.copy(alpha = progress)`）；
+ * - 手势 = `interactiveHighlight.gestureModifier`（纯观察不消费事件，全文核对），
+ *   与 clickable 叠用安全。点击消费并转发 [ExtraActionButtonSpec.onClick]（栏内触摸
+ *   不穿透——与栏外 aux 胶囊的穿透语义相反，后者见 AuxGlassPill）。
+ */
+@Composable
+private fun ExtraActionButton(
+    spec: ExtraActionButtonSpec,
+    backdrop: com.kyant.backdrop.Backdrop,
+    style: GlassStyle,
+    tick: IntState,
+    diameter: androidx.compose.ui.unit.Dp,
+) {
+    val animationScope = rememberCoroutineScope()
+    // 交互驱动 = 参考项目 catalog LiquidButton 原版：InteractiveHighlight（本项目一比一
+    // 移植件）pressProgress/offset——demo 手感（含按压回弹）以其弹簧为准，1:1 保真
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    Box(
+        Modifier
+            .size(diameter)
+            .drawBackdrop(
+                backdrop = backdrop,
+                shape = { CircleShape },
+                effects = {
+                    colorControls(saturation = style.saturation)
+                    blur(style.blurRadiusDp.dp.toPx())
+                    lens(
+                        24f.dp.toPx() * style.refractionScale,
+                        24f.dp.toPx() * style.refractionScale,
+                    )
+                },
+                // LiquidButton layerBlock 逐字移植：按压缩放（4dp/高）+ tanh 跟随平移
+                // （maxOffset = 短边、initialDerivative = 0.05——跟手但极收敛，永不拉满）
+                // + 拖拽方向性拉伸（水平拖横向拉、竖直拖纵向拉，各按偏移比例线性增长）。
+                // 变形放 layerBlock：内容变形而采样背景不变形。
+                layerBlock = {
+                    val width = size.width
+                    val height = size.height
+
+                    val progress = interactiveHighlight.pressProgress
+                    val scale = lerp(1f, 1f + 4f.dp.toPx() / size.height, progress)
+
+                    val maxOffset = size.minDimension
+                    val initialDerivative = 0.05f
+                    val offset = interactiveHighlight.offset
+                    translationX = maxOffset * tanh(initialDerivative * offset.x / maxOffset)
+                    translationY = maxOffset * tanh(initialDerivative * offset.y / maxOffset)
+
+                    val maxDragScale = 4f.dp.toPx() / size.height
+                    val offsetAngle = atan2(offset.y, offset.x)
+                    scaleX =
+                        scale +
+                            maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
+                            (width / height).fastCoerceAtMost(1f)
+                    scaleY =
+                        scale +
+                            maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
+                            (height / width).fastCoerceAtMost(1f)
+                },
+                highlight = { Highlight.Default.copy(alpha = interactiveHighlight.pressProgress) },
+                onDrawSurface = {
+                    spec.accent()?.let { tint ->
+                        drawRect(tint, blendMode = BlendMode.Hue)
+                        drawRect(tint.copy(alpha = 0.75f))
+                    }
+                },
+            )
+            .clickable {
+                spec.onClick()
+            }
+            .then(interactiveHighlight.modifier)
+            .then(interactiveHighlight.gestureModifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.fillMaxSize().paint(remember(spec) { ExtraIconPainter(spec, tick) }))
+    }
+}
+
+/** 附加操作按钮的图标逐帧绘制器：每次绘制实时解析 [ExtraActionButtonSpec.icon]
+ *  （换肤/深浅色自动跟随，不缓存），按 intrinsic 像素尺寸 1:1 居中绘制，超出按钮
+ *  外接盒时等比收缩（不放大）。DrawScope 坐标与 drawable intrinsic 同为像素，无
+ *  密度换算。 */
+private class ExtraIconPainter(
+    private val spec: ExtraActionButtonSpec,
+    private val tick: IntState,
+) : Painter() {
+    override val intrinsicSize = Size.Unspecified
+
+    override fun DrawScope.onDraw() {
+        tick.value
+        val drawable = spec.icon() ?: return
+        val intrinsicW = drawable.intrinsicWidth
+        val intrinsicH = drawable.intrinsicHeight
+        if (intrinsicW <= 0 || intrinsicH <= 0) return
+        var widthPx = intrinsicW.toFloat()
+        var heightPx = intrinsicH.toFloat()
+        if (widthPx > size.width || heightPx > size.height) {
+            val scale = minOf(size.width / widthPx, size.height / heightPx)
+            widthPx *= scale
+            heightPx *= scale
+        }
+        val canvas = drawContext.canvas.nativeCanvas
+        canvas.save()
+        canvas.translate((size.width - widthPx) / 2f, (size.height - heightPx) / 2f)
+        drawable.setBounds(0, 0, widthPx.toInt().coerceAtLeast(1), heightPx.toInt().coerceAtLeast(1))
+        drawable.draw(canvas)
+        canvas.restore()
+    }
+}
+
 
 /**
  * 辅助玻璃底（auxGlassViews 声明式通道）：与玻璃底栏同款的玻璃底（同采样源、同
