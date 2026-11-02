@@ -33,8 +33,9 @@ import java.lang.ref.WeakReference
  *   zt.f 的提升/轮询/信号 hook 三层全部作用于错误广告面，已全部删除（§4.7 教训 9）。
  * - 内容延伸（页面底部留白清零）：分发点改投 0 + 收口（VViewUtils/View.setPadding/
  *   View.setLayoutParams，阈值取应用自身基准 qq.d.f）+ 常驻清扫（§4.2）。信息流尾部
- *   footer（168px）是首页触摸/滚动拦截协议的承重墙，**不可归零**（归零导致滚动拦截
- *   死区，已回滚）——信息流最末端玻璃栏周围可见约 168px 页面背景带，为结构性代价。
+ *   footer（168px 占位）是首页触摸/滚动拦截协议的承重墙，**不可归零**（归零导致滚动
+ *   拦截死区，v2.2 已回滚）——钳制为非零 token 高度（4px）：滚动区间与 B() 翻转语义
+ *   保留、168px 视觉带消除，回顶态（滚到末尾图标变箭头）信息流得以延伸全屏。
  */
 object VivoSpaceAdapter : AppAdapter {
 
@@ -59,6 +60,12 @@ object VivoSpaceAdapter : AppAdapter {
     private const val POPUP_ID_NAME = "popup_container"
     // 冷启动 pending：弹窗未出现超过此时长即视为无弹窗,玻璃 overlay 直接显示
     private const val POPUP_PENDING_MS = 1_500L
+    // 精选页信息流尾部 footer 占位（vivospace_list_footer_place_holder,高恰为 dp56）钳制
+    // 目标 token 高度（px）。**非零**是刻意的：footer 是父列表滚动区间与触摸/滚动拦截
+    // 协议（NestedParentRecyclerView.B()/G() 状态机）的承重墙,v2.2 归零致死区已回滚
+    // （教训 7）；协议依赖 canScrollVertically 的翻转而非 168px 本身,4px 保留语义、
+    // 消除视觉带。
+    private const val FEED_FOOTER_TOKEN_PX = 4
 
     // —— 运行期共享状态（单例适配器；WeakReference 防泄漏） ——
     /** 开屏弹窗容器（可见性门控的观测对象）。 */
@@ -74,6 +81,9 @@ object VivoSpaceAdapter : AppAdapter {
     @Volatile private var appContextRef: WeakReference<Context>? = null
     @Volatile private var classifyFragmentFieldWarned = false
     @Volatile private var classifyVpMissingWarned = false
+    /** 精选页信息流尾部 footer 占位（r(View) 落地时记录；清扫逐拍重钳制回顶态重设）。 */
+    @Volatile private var feedFooterRef: WeakReference<View>? = null
+    @Volatile private var sweepDiagLogged = false
 
     // —— 进程级生命周期监视器（独立于模块自身的 Activity.onResume hook 与玻璃会话链路；
     // v1.7 真机取证:宿主冷启动日志风暴期 logd 按 uid 限流,会话级机制的日志被整段丢弃,
@@ -318,11 +328,22 @@ object VivoSpaceAdapter : AppAdapter {
                     if (remaining > 0) {
                         remaining--
                         mainHandler.postDelayed(this, 250)
+                    } else {
+                        // 真机 2026-11-02：静默放弃曾让监视器整体哑火且无迹可查（会话在跑、
+                        // gate/sweep 全无日志）——放弃必须留痕；会话级保底见 onSessionCreated
+                        android.util.Log.println(
+                            android.util.Log.WARN, "LiquidGlass",
+                            "lifecycle spy: no application after retries, spy dead",
+                        )
                     }
                     return
                 }
                 runCatching {
                     app.registerActivityLifecycleCallbacks(lifecycleSpy)
+                    android.util.Log.println(
+                        android.util.Log.INFO, "LiquidGlass",
+                        "lifecycle spy registered",
+                    )
                 }.onFailure {
                     facade.log(android.util.Log.WARN, "lifecycle spy register failed", it)
                 }
@@ -538,14 +559,114 @@ object VivoSpaceAdapter : AppAdapter {
             })
             facade.log(android.util.Log.INFO, "hooked View.setLayoutParams: bottom reserve margin → 0 (threshold lazy)")
         }.onFailure { facade.log(android.util.Log.WARN, "hook View.setLayoutParams sink failed", it) }
-        // 信息流尾部 footer（168px,vivospace_list_footer_place_holder 布局占位）是首页
-        // 触摸/滚动拦截协议（onInterceptTouchEvent 的 B()/G() 状态机）的承重墙——v2.2 归零
-        // 导致触摸拦截死区、内层列表有内容也滚不动,已回滚为原生高度。**禁止再对其归零。**
-        // 末端的可见代价：信息流滚到最底时,玻璃栏周围可见约 168px 页面背景带（原生形态由
-        // 不透明底栏遮盖,悬浮玻璃盖不住周围）——结构性代价,用户已确认接受。
+        // ⑦ 精选页信息流尾部 footer 占位钳制（168px → token,真机定案生效机制）。箭头
+        //    （回顶态）出现时机 = NestedParentRecyclerView.B()（isScrollEnd）首次翻转 →
+        //    activity C1() 换 tab 0 图标为 tab_back_top——"上滑至图标变箭头"与 footer 区
+        //    重合,168px 占位即"信息流无法全屏"的留白源。v2.2 归零破坏触摸/滚动拦截协议
+        //    已回滚（教训 7）,本方案钳为非零 token（见 FEED_FOOTER_TOKEN_PX）。识别三
+        //    条件 = r(View) 落地 + 高度恰为 dp56 的空容器 + 调用列表在 common_root 子树内
+        //    （精选/同构页；forum 等真实内容 footer 不动）。回顶态应用会重设高度 → 记录
+        //    WeakReference,监视器清扫（sweepBottomReserve ③）逐拍重钳制。真机 trace 实证
+        //    （2026-11-02）：footer 走 r() 落地、⑦ 挂载瞬间即命中,清扫结构识别路径从未
+        //    命中已删——⑦ 是唯一钳制入口,③ 只负责重设压制。
+        runCatching {
+            val rView = Class.forName(
+                "com.vivo.space.widget.recyclerview.PrimaryRecyclerView", true, loader,
+            ).getDeclaredMethod("r", View::class.java)
+            var footerHitLogged = false
+            facade.around(rView, null, { call ->
+                val list = call.thisObj as? View
+                val footer = call.args.getOrNull(0) as? View
+                if (list != null && footer != null && isFeedFooterPlaceholder(list, footer)) {
+                    clampFeedFooter(footer)
+                    if (!footerHitLogged) {
+                        footerHitLogged = true
+                        facade.log(
+                            android.util.Log.INFO,
+                            "footer clamp: feed placeholder (${footer.layoutParams?.height}px) → token",
+                        )
+                    }
+                }
+                null
+            })
+            facade.log(android.util.Log.INFO, "hooked PrimaryRecyclerView.r: feed footer placeholder clamp")
+        }.onFailure { facade.log(android.util.Log.WARN, "hook PrimaryRecyclerView.r failed (app updated?)", it) }
     }
 
-    // ③ 选购页差异化：classify.i.c(int) 一值两写（左栏 ClassifyTabLayout.bottomMargin =
+    /** footer 占位判据：高度恰为 dp56 的空 LinearLayout/ViewGroup + 调用列表在
+     *  common_root 子树内（精选页信息流根视图,HomePageFragment.P）。任一不满足 =
+     *  其它页面的真实 footer,放行原生高度。dp56/common_root 解析失败 = 放行（fail-open）。 */
+    private fun isFeedFooterPlaceholder(list: View, footer: View): Boolean {
+        if (footer !is ViewGroup || footer.childCount != 0) return false
+        val lp = footer.layoutParams ?: return false
+        val dp56 = dimenPx("dp56")
+        if (dp56 <= 0 || lp.height != dp56) return false
+        val rootId = resId(appClassLoader, "R\$id", "common_root")
+        if (rootId == 0) return false
+        var node: Any? = list
+        var depth = 0
+        while (node is View && depth < 12) {
+            if (node.id == rootId) return true
+            node = node.parent
+            depth++
+        }
+        return false
+    }
+
+    /** 钳制 footer 占位高度并记录引用（清扫重钳制用）；已 ≤ token 时幂等。 */
+    private fun clampFeedFooter(footer: View) {
+        val lp = footer.layoutParams ?: return
+        if (lp.height <= FEED_FOOTER_TOKEN_PX) return
+        lp.height = FEED_FOOTER_TOKEN_PX
+        footer.layoutParams = lp
+        feedFooterRef = WeakReference(footer)
+    }
+
+    /** R$dimen 取像素（多源：主 R + lib R 字段反射 + getIdentifier 兜底，正结果缓存）。
+     *  **多源是永久必要而非补丁**：R8 resource shrinker 会剥离代码未引用的 R 字段——
+     *  真机 13.6.0.1 实证 `com.vivo.space.R$dimen.dp56` 被剥离（NoSuchFieldException）、
+     *  `com.vivo.space.lib.R$dimen` 存活；清扫逐拍调用若不缓存则每拍两次反射异常。
+     *  全部失败打一次性 WARN（防"静默归零禁用判据"复发无迹可查，教训 12）。失败返回
+     *  0 = 调用方放行。 */
+    private fun dimenPx(name: String, activity: Activity? = null): Int {
+        dimenCache[name]?.let { return it }
+        val context = appContextRef?.get() ?: currentApplication() ?: activity ?: return 0
+        val loader = appClassLoader
+        if (loader != null) {
+            for (cls in listOf("com.vivo.space.R\$dimen", "com.vivo.space.lib.R\$dimen")) {
+                val id = runCatching { Class.forName(cls, true, loader).getField(name).getInt(null) }
+                    .getOrDefault(0)
+                if (id != 0) {
+                    val px = runCatching { context.resources.getDimensionPixelSize(id) }.getOrDefault(0)
+                    if (px > 0) {
+                        dimenCache[name] = px
+                        return px
+                    }
+                }
+            }
+        }
+        // getIdentifier 兜底（该应用 arsc 混淆改名,大概率返回 0,仅作最后尝试）
+        val a = activity ?: (context as? Activity) ?: return 0
+        val id2 = a.resources.getIdentifier(name, "dimen", a.packageName)
+        if (id2 != 0) {
+            val px = a.resources.getDimensionPixelSize(id2)
+            if (px > 0) {
+                dimenCache[name] = px
+                return px
+            }
+        }
+        if (!dimenWarnLogged) {
+            dimenWarnLogged = true
+            android.util.Log.println(
+                android.util.Log.WARN, "LiquidGlass",
+                "dimenPx: $name unresolved (all sources), dependent checks disabled",
+            )
+        }
+        return 0
+    }
+
+    @Volatile private var dimenWarnLogged = false
+    private val dimenCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
     //    可用性预留 + 右侧 ViewPager2.bottomMargin = 延伸）。原方法执行后仅把右侧 margin
     //    归零——左栏保留预留（末项可联动滚到栏上方、不被遮挡），右侧延伸全屏。
     //    回调细分明日志（field/view/viewpager 任一环节失配可见），fragment view 未就绪
@@ -700,6 +821,11 @@ object VivoSpaceAdapter : AppAdapter {
     ) {
         appContextRef = WeakReference(activity)
         tabBarRef = WeakReference(session.tabContainer)
+        // 会话级保底驱动监视器（幂等，startMonitor 同 activity 去重）：lifecycleSpy 依赖
+        // Application 注册链路，真机 2026-11-02 曾整体哑火（渲染会话在跑而 gate/sweep
+        // 全无日志）——onSessionCreated 本身在主线程且 activity 就绪，直接启动监视器，
+        // 开屏弹窗门控/常驻清扫/footer 钳制不再单依赖 spy 的注册成败。
+        startMonitor(activity)
         // 背景采样去重（v2.2，与小红书/高德/相册对齐，模块配置 lightweightSampling 可
         // 远程关）：三个玻璃节点每帧各自对 appRoot 全树 draw → 1× RenderNode 录制 +
         // 三节点回放（信息流/资讯页重内容滚动卡顿主源）。
@@ -741,13 +867,31 @@ object VivoSpaceAdapter : AppAdapter {
     /** 清扫 content 树（单轮，返回修复数）：①任意视图的底栏级底部 padding/bottomMargin
      *  （≥ 阈值）归零（豁免 isReserveExempt：ClassifyTabLayout 左栏预留/广告/底栏/overlay
      *  子树）；②选购页右侧 classify_vertical_viewpager 的 bottomMargin 无条件归零（③ 的
-     *  兜底，只动 bottom、top 状态栏预留不动）。 */
+     *  兜底，只动 bottom、top 状态栏预留不动）；③精选页 footer 占位重钳制（⑦ 已在
+     *  r(View) 落地时钳住并记录引用,此处逐拍压制回顶态的重设——真机 trace 实证 footer
+     *  走 r() 落地、⑦ 生效,曾试建的"清扫结构识别兜底 ③b"从未命中,已按定案删除）。 */
     private fun sweepBottomReserve(activity: Activity): Int {
         val loader = appClassLoader
         val reserve = resolveReservePx(loader, "sweep") ?: return 0
         val content = activity.findViewById<View>(android.R.id.content) ?: return 0
         val vpId = resId(loader, "R\$id", "classify_vertical_viewpager", activity)
         var fixed = 0
+        // ③ footer 占位重钳制：回顶态（滚到末尾）应用会把占位重设回原生 168px
+        feedFooterRef?.get()?.let { footer ->
+            val dp56 = dimenPx("dp56", activity)
+            if (dp56 > 0 && footer.layoutParams?.height ?: 0 >= dp56) {
+                clampFeedFooter(footer)
+                fixed++
+            }
+        }
+        if (!sweepDiagLogged) {
+            // 一次性输出判据解析值（防"解析归零静默禁用判据"复发无迹可查,教训 12）
+            sweepDiagLogged = true
+            android.util.Log.println(
+                android.util.Log.INFO, "LiquidGlass",
+                "sweep first: dp56=${dimenPx("dp56", activity)} reserve=$reserve",
+            )
+        }
         fun walk(v: View?) {
             if (v == null) return
             if (!isReserveExempt(v)) {
