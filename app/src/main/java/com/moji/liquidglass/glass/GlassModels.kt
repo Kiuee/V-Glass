@@ -147,6 +147,15 @@ class GlassSession(
     @Volatile
     var dedupeBackdropSampling: Boolean = false
 
+    /** 实时显示列表采样（默认 false = 每帧 `view.draw()` 重编码内容树，既有行为逐位不变，
+     *  §0.4）。去重开启时生效：改为引用内容视图自身已录制的 `RenderNode`（隐藏 API
+     *  `View.mRenderNode`，取不到自动回退），条带仅在几何变化/唤醒时重录、其余帧纯回放
+     *  ——主线程每帧零重编码，条带内容仍是应用当帧录制的显示列表（**无降频滞后**）。
+     *  适用 = 采样即整屏重画的 GL 内容页（相册照片网格：`view.draw()` 会在相册渲染器内
+     *  重新走一遍整屏绘制）。仅声明该通道的应用消费。 */
+    @Volatile
+    var backdropLiveNodeSampling: Boolean = false
+
     /** 玻璃特效渲染最小间隔（纳秒；0 = 每帧渲染，默认）。重内容页 GPU 预算紧张时
      *  （如相册 GL 网格 + 三层 vibrancy/blur/lens 特效 @120Hz 会顶爆 8.3ms 帧预算，
      *  触发刷新率调度 120↔60 摆动），适配器按配置设为 ~16ms 把特效重绘降到 60fps：

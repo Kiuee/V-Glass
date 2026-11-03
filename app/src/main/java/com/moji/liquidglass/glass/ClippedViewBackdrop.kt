@@ -51,6 +51,12 @@ class ClippedViewBackdrop(
     private val viewPosition: () -> Offset,
     /** 采样去重开关（默认 { false } = 各自直绘，历史行为）。 */
     private val dedupe: () -> Boolean = { false },
+    /** 实时显示列表采样（默认 { false } = 每帧 `view.draw()` 重编码，历史行为；由
+     *  GlassSession.backdropLiveNodeSampling 注入，仅相册声明）。true 时去重路径不再
+     *  重画内容树，改为引用内容视图自身已录制的 RenderNode——主线程每帧零重编码，
+     *  条带内容仍是应用当帧录制的显示列表（无降频滞后）；取不到 RenderNode 时自动
+     *  回退 `view.draw()`。 */
+    private val liveNodeSampling: () -> Boolean = { false },
     /** 采样冻结门控（默认 { false } = 不冻结；声明式通道 backdropFreezeGate 经 GlassRoot
      *  注入）。true = 不对 [view] 做逐帧外部 draw：**进入冻结时一次性录制**条带进
      *  bandNode，冻结期间纯回放（零外部 draw）——外部高频 view.draw 会打乱 WebView 等
@@ -81,6 +87,46 @@ class ClippedViewBackdrop(
     private var recordCostSumUs = 0L
     private var enableLogged = false
     @Volatile private var frozen = false
+
+    // —— 实时显示列表采样（liveNodeSampling）状态 ——
+    /** 内容视图自身的 RenderNode（隐藏 API，API 29+）：取不到即为 null → 回退 view.draw。 */
+    private val renderNodeField: java.lang.reflect.Field? by lazy {
+        runCatching {
+            android.view.View::class.java.getDeclaredField("mRenderNode").apply { isAccessible = true }
+        }.getOrNull()
+    }
+    /** 条带显示列表当前是否引用着实时内容节点（true 时后续 tick 只回放、不重录）。 */
+    private var liveBandRecorded = false
+    /** 当前条带引用的内容节点（视图重建/换节点时身份变化 → 重录）。 */
+    private var recordedLiveNode: android.graphics.RenderNode? = null
+    /** live 路径的 tick 标记（与既有路径 recordedTick 相互独立，互不污染回退语义）。 */
+    private var liveBandTick = Int.MIN_VALUE
+    private var recordedBounds = BandBounds(0, 0, 0)
+    private var liveLogged = false
+    private var liveFallbackLogged = false
+
+    /** 条带在内容坐标系里的几何（用于判定是否需要重录：栏位移/旋转/inset 变化会变）。 */
+    private class BandBounds(val top: Int, val width: Int, val height: Int) {
+        override fun equals(other: Any?): Boolean =
+            other is BandBounds && other.top == top && other.width == width && other.height == height
+
+        override fun hashCode(): Int = (top * 31 + width) * 31 + height
+    }
+
+    private fun contentRenderNode(): android.graphics.RenderNode? {
+        if (Build.VERSION.SDK_INT < 29) return null
+        // 优先取字段（View.mRenderNode），不可用时再试隐藏方法 getRenderNode()；两者
+        // 都失败（ROM 隐藏 API 限制）→ 返回 null，由调用方回退 view.draw()。
+        val node = runCatching {
+            renderNodeField?.get(view) as? android.graphics.RenderNode
+        }.getOrNull() ?: runCatching {
+            android.view.View::class.java
+                .getDeclaredMethod("getRenderNode")
+                .apply { isAccessible = true }
+                .invoke(view) as? android.graphics.RenderNode
+        }.getOrNull() ?: return null
+        return node.takeIf { runCatching { it.hasDisplayList() }.getOrDefault(false) }
+    }
 
     override fun DrawScope.drawBackdrop(
         density: Density,
@@ -124,6 +170,14 @@ class ClippedViewBackdrop(
             frozen = false
             log?.invoke("backdrop freeze off (resume live sampling)")
         }
+        // 实时显示列表采样（liveNodeSampling，默认关）：条带只在几何变化/唤醒时重录，
+        // 其余 tick 纯回放——内容更新由内容视图自身当帧的显示列表自动跟随（零滞后）。
+        // 取不到 RenderNode 时回退下面的每 tick 重录路径（两种路径的录制标记相互独立）。
+        if (node != null && !dedupeDisabled && dedupe() && liveNodeSampling() &&
+            liveBandPath(node, coordinates, tickValue)
+        ) {
+            return
+        }
         if (node != null && !dedupeDisabled && dedupe()) {
             if (recordedTick != tickValue || forceRecord()) {
                 recordedTick = tickValue
@@ -154,26 +208,30 @@ class ClippedViewBackdrop(
         drawIntoCanvas { canvas -> drawDirect(canvas.nativeCanvas, coordinates) }
     }
 
-    /** 全宽条带录制：内容坐标系，节点本地 (0,0) = 内容点 (0, bandTop−margin)。 */
-    private fun DrawScope.recordBand(node: android.graphics.RenderNode, coordinates: LayoutCoordinates) {
+    /** 全宽条带录制：内容坐标系，节点本地 (0,0) = 内容点 (0, bandTop−margin)。
+     *  [liveContent] 非 null 时不再 `view.draw()` 重编码内容树，改为引用内容视图自身
+     *  已录制的 RenderNode（回放时由 RenderThread 栅格化并裁到条带）。 */
+    private fun DrawScope.recordBand(
+        node: android.graphics.RenderNode,
+        coordinates: LayoutCoordinates,
+        liveContent: android.graphics.RenderNode? = null,
+    ): BandBounds {
         if (!enableLogged) {
             enableLogged = true
             log?.invoke("band dedupe enabled (full-width strip)")
         }
         val started = SystemClock.elapsedRealtimeNanos()
-        // 条带高度 = 当前消费者条带 + 上下 8dp 边距（主层与副本/液泡条带垂直错位 4dp）
-        val bandHeight = size.height.toInt() + with(density) { 16.dp.toPx().toInt() }.coerceAtLeast(1)
-        val marginPx = bandHeight - size.height.toInt()
-        val viewPos = viewPosition()
-        val glassPos = coordinates.positionInWindow()
-        val bandTop = (glassPos.y - viewPos.y).toInt() - marginPx / 2
-        val width = view.width.coerceAtLeast(1)
-        node.setPosition(0, bandTop, width, bandTop + bandHeight)
-        val canvas = node.beginRecording(width, bandHeight)
+        val bounds = bandBounds(coordinates)
+        node.setPosition(0, bounds.top, bounds.width, bounds.top + bounds.height)
+        val canvas = node.beginRecording(bounds.width, bounds.height)
         try {
-            canvas.clipRect(0f, 0f, width.toFloat(), bandHeight.toFloat())
-            canvas.translate(0f, -bandTop.toFloat())
-            view.draw(canvas)
+            canvas.clipRect(0f, 0f, bounds.width.toFloat(), bounds.height.toFloat())
+            canvas.translate(0f, -bounds.top.toFloat())
+            if (liveContent != null) {
+                canvas.drawRenderNode(liveContent)
+            } else {
+                view.draw(canvas)
+            }
         } finally {
             node.endRecording()
         }
@@ -184,6 +242,82 @@ class ClippedViewBackdrop(
             recordCostCount = 0
             recordCostSumUs = 0L
         }
+        return bounds
+    }
+
+    /** 条带几何（内容坐标系）：高度 = 当前消费者条带 + 上下 8dp 边距（主层与副本/液泡
+     *  条带垂直错位 4dp，边距保证互不越界）；原点 = glassPos − viewPos。 */
+    private fun DrawScope.bandBounds(coordinates: LayoutCoordinates): BandBounds {
+        val bandHeight = size.height.toInt() + with(density) { 16.dp.toPx().toInt() }.coerceAtLeast(1)
+        val marginPx = bandHeight - size.height.toInt()
+        val viewPos = viewPosition()
+        val glassPos = coordinates.positionInWindow()
+        val bandTop = (glassPos.y - viewPos.y).toInt() - marginPx / 2
+        val width = view.width.coerceAtLeast(1)
+        return BandBounds(bandTop, width, bandHeight)
+    }
+
+    /**
+     * 实时显示列表采样路径：首次（或几何变化/唤醒强制）录制一次引用内容节点，之后每 tick
+     * 纯回放。返回 true = 本 tick 已处理（调用方直接返回）；false = 本帧不可用，调用方
+     * 走既有每 tick 重录路径。
+     */
+    private fun DrawScope.liveBandPath(
+        node: android.graphics.RenderNode,
+        coordinates: LayoutCoordinates,
+        tickValue: Int,
+    ): Boolean {
+        if (liveBandTick != tickValue) {
+            liveBandTick = tickValue
+            val bounds = bandBounds(coordinates)
+            val live = contentRenderNode()
+            if (live == null) {
+                liveBandRecorded = false
+                if (!liveFallbackLogged) {
+                    liveFallbackLogged = true
+                    log?.invoke("band sampling: content render node unavailable, fallback to view.draw")
+                }
+                return false
+            }
+            if (!liveBandRecorded || live !== recordedLiveNode || forceRecord() ||
+                bounds != recordedBounds
+            ) {
+                val ok = runCatching { recordBand(node, coordinates, live) }
+                if (ok.isSuccess) {
+                    liveBandRecorded = true
+                    recordedLiveNode = live
+                    recordedBounds = bounds
+                    if (!liveLogged) {
+                        liveLogged = true
+                        log?.invoke("band sampling: live content render node (no per-frame content redraw)")
+                    }
+                } else {
+                    liveBandRecorded = false
+                    if (!liveFallbackLogged) {
+                        liveFallbackLogged = true
+                        log?.invoke("band sampling: live record failed, fallback to view.draw: ${ok.exceptionOrNull()}")
+                    }
+                    return false
+                }
+            }
+        } else if (!liveBandRecorded) {
+            return false
+        }
+        drawIntoCanvas { canvas ->
+            val nc = canvas.nativeCanvas
+            if (nc.isHardwareAccelerated) {
+                try {
+                    replay(nc, coordinates, node)
+                } catch (t: Throwable) {
+                    dedupeDisabled = true
+                    log?.invoke("band replay failed, fallback to direct draw: $t")
+                    drawDirect(nc, coordinates)
+                }
+            } else {
+                drawDirect(nc, coordinates)
+            }
+        }
+        return true
     }
 
     /** 回放：按当次消费者的坐标对齐到内容坐标系，胶囊内的条带区域与直绘逐像素一致。 */

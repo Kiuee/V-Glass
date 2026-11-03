@@ -190,6 +190,11 @@ object GalleryAdapter : AppAdapter {
         // 背景采样去重：照片网格为 GL 渲染，三玻璃节点各自直绘采样 = 每帧 3 次 GL 绘制，
         // 滑动掉帧主因；开启后每 tick 单次录制全宽条带、三节点回放（远程配置可关）
         session.dedupeBackdropSampling = config().lightweightSampling
+        // 实时显示列表采样：相册 `view.draw(canvas)` 会进入 GLRootView.onDraw 把整屏照片
+        // 网格重画一遍（主线程每帧重编码，低速滑动掉帧直接可见）。改为引用内容视图自身
+        // 已录制的 RenderNode：条带只在几何变化时重录，其余帧纯回放，内容仍是当帧实时
+        // （无降频滞后）；隐藏 API 取不到时引擎自动回退 view.draw（不崩溃）。
+        session.backdropLiveNodeSampling = true
         // 事件驱动写死停用（GL 合成空窗/图标动画/光效三类效果问题，见 installAppHooks 注释）；
         // onDraw 信号仅用于升满帧率档（静止降帧方案），不门控绘制
         session.tickEventDriven = false
