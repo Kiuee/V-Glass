@@ -1,13 +1,19 @@
 package com.moji.liquidglass.hook.adapters
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
-import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import androidx.compose.ui.graphics.Color
 import com.moji.liquidglass.config.ModuleConfig
+import com.moji.liquidglass.glass.ExtraActionButtonSpec
 import com.moji.liquidglass.glass.GlassSession
 import com.moji.liquidglass.glass.IconMode
 import com.moji.liquidglass.glass.TabBarDescriptor
@@ -27,9 +33,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   （独立类、非继承，5 槽位结构一致），findTabBar 双类名匹配兜底。
  * - **资源 id 全表混淆**（AndResGuard，资源名 dump 全为 0_resource_name_obfuscated）：
  *   getIdentifier 不可用，定位只靠类名 + 子项结构（区别于微博 main_radio 资源名锚点）。
- * - 每 tab 视图：`homepage.tabbar.TabView`（ConstraintLayout 子类，非自绘）。5 槽位 =
+ * - 每 tab 视图：`homepage.tabbar.TabView`（ConstraintLayout 子类，非自绘）。原生 5 槽位 =
  *   首页/购物 TabView + **发布中键（RelativeLayout 包 ImageView+LottieAnimationView，
- *   非 TabView）** + 消息/我 TabView；容器第 0 个子项是纯 ImageView 装饰条，tabViewsOf 跳过。
+ *   非 TabView）** + 消息/我 TabView；容器第 0 个子项是纯 ImageView 装饰条。
+ *   **v3.0 起玻璃栏 4 槽**：tabViewsOf 只收 TabView 条目，发布键退出镜像槽位、改由
+ *   descriptor.extraActionButton 承担（见下方发布键条目）。
  * - 选中态：应用原生走标准 `View.setSelected` + `state_selected` selector
  *   （TabBarView.setXxxSelected 直接调 TabView.setSelected；图标经 setDrawable 合成
  *   selector、文字走 ColorStateList）——引擎逐帧 isSelected 读数/装配初值零改动工作，
@@ -54,18 +62,24 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   ConstraintSet 约束不动、文字自动回到整条目垂直居中（padding 不在 ConstraintSet
  *   管理范围，应用切换选中态不会写回）。原生底栏已被 suppressNatively 隐藏，对应用
  *   原生视觉零影响——与高德"抑制态条目装饰中和"同一手法。
- * - **发布键图形中心偏移中和**：图标 drawable（r/cg5.xml，60×55dp vector）的图形中心
- *   在 60% 高度（y≈33）+ marginTop=5dp → 容器内中心 38dp，而镜像居中基准是容器中心
- *   30dp → 玻璃槽位内下沉 8dp（文字经 paddingTop=0 中和后已居中，唯独发布键仍偏下）。
- *   装配时对发布键 ImageView 设 translationY=-8dp 抬回（不改布局无拉伸；按压缩放动画
- *   B4/k4 作用于容器 translationY，与 img 子视图互不冲突）。
+ * - **发布键独立按钮（v3.0，extraActionButton 通用通道，小黑盒 №15 同款形态）**：发布键
+ *   退出玻璃槽位后原生视图随整栏 suppressNatively（alpha=0 + clickable 树禁用）隐藏，
+ *   无需单独压制（小黑盒 vg_mid_tab 是 RadioGroup 兄弟层才需单独压）。玻璃栏右侧圆形
+ *   **着色**玻璃按钮：**accent = 加号底色**（原图标 drawable 不透明像素直方图众数，
+ *   静态实证 #FF2442 红；按实例缓存、换图/深浅色自动重算）+ **icon = 自绘白色圆头十字
+ *   加号**（v3.0.2 用户定案：不使用原图标字形——v3.0 原样绘制红底残留、v3.0.1 通道差
+ *   提取真机复验红底残留且位图几何偏心，自绘天然居中且免疫运行时 drawable 形态未知，
+ *   见 plusIcon）；点击 = getIndexPost getter 穿透（performClick 不检查 isClickable，
+ *   引擎 clickable 树禁用不影响，v2.2 槽位 2 即此路径）→ 失配回退装配期捕获的
+ *   postKeyRef（capturePostKey）。装配时对发布键无任何视图手术（v1.4 raisePostIcon 的
+ *   8dp 抬升随镜像退出一并删除）。
  * - **消息/我的页小白条区域内容（v2.6 页面容器导航衬垫归零）**：应用 SystemBarsManager
  *   从 ROOT navigation insets（rootWindowInsets 直读）把小白条高度写入页面容器底部衬垫
  *   （真机实证：消息页 = MessagePageView pb=54；我的页 = ProfileMainPageNoteInfoView
  *   pb=54，塌陷装配期写入）——content 层派发 insets 清零（installContentInsetsZeroing）
  *   拦不住 root 直读通路（两条 inset 通路必须分开处理，LiquidTab XhsMessageViewport
  *   定案），页面布局盒被衬垫整体抬离玻璃栏区 = 小白条区域无内容。列表余量 pass 同一轮
- *   DFS 内嵌 viewport 归零（applyViewportFit：槽位 3 类名锚点 + 值驱动 [inset/2, inset]
+ *   DFS 内嵌 viewport 归零（applyViewportFit：消息页类名锚点 + 值驱动 [inset/2, inset]
  *   任意大容器兜底；发现记录原值清零、重申、离页还原）+ decor OnGlobalLayout 布局重申
  *   （装配期 60ms 追频 / 稳态 O(k) 廉价快路径）+ 列表余量单调化（只增不减，塌陷收缩期
  *   零改写零重布局）——v2.5 只修了余量 pass 误伤 ViewPager2 内部容器的布局抬离，衬垫
@@ -210,17 +224,23 @@ object XhsAdapter : AppAdapter {
     private val PRE_GROW_RETRY_DELAYS = longArrayOf(1600L, 3200L)
 
     /** TabBarView 的条目 getter（真实方法名，非混淆类上的私有方法；LiquidTab
-     *  XhsNavigationState.performTap 同款锚点，比业务混淆名抗版本漂移）：槽位序即
-     *  数组序（2 = 发布键 RelativeLayout）。 */
+     *  XhsNavigationState.performTap 同款锚点，比业务混淆名抗版本漂移）：数组序 =
+     *  原生 5 槽位序（2 = 发布键 RelativeLayout），玻璃槽位经 SLOT_GETTER_INDICES 查表。 */
     private val TAB_GETTERS = arrayOf(
         "getIndexHome", "getIndexStore", "getIndexPost", "getIndexMessage", "getIndexMe",
     )
 
-    /** 发布键图形中心偏移：drawable 60×55dp 的图形中心在 60% 高度（y≈33）+ marginTop 5dp
-     *  → 容器内中心 38dp；镜像居中基准 = 容器中心 30dp → 抬升 8dp（见 raisePostIcon）。 */
-    private const val POST_ICON_RAISE_DP = -8f
+    /** 玻璃槽位 → TAB_GETTERS 索引（v3.0 发布键退出槽位后玻璃栏 4 槽：首页/购物/消息/我，
+     *  发布键不再是槽位，其 getter（索引 2）由 extraActionButton 的 dispatchPostClick 专用）。 */
+    private val SLOT_GETTER_INDICES = intArrayOf(0, 1, 3, 4)
 
     // —— hook/装配期写入的运行时状态 ——
+
+    /** 发布中键（RelativeLayout，原生 5 槽位序 2）装配期捕获：退出玻璃槽位后由
+     *  descriptor.extraActionButton 玻璃栏右侧圆形按钮承担（图标逐帧取其首个 ImageView
+     *  的 drawable，点击经 getIndexPost getter 穿透；本引用 = getter 失配的点击回退）。 */
+    @Volatile
+    private var postKeyRef: java.lang.ref.WeakReference<View>? = null
 
     /** 首次捕获的内容储备值（pager 原始 marginBottom，px），重扫日志对照用。 */
     @Volatile
@@ -446,7 +466,8 @@ object XhsAdapter : AppAdapter {
         val session = activeSession ?: return
         runCatching {
             val slot = session.selectedTabIndex()
-            if (slot != 3 && slot != 4) return
+            // v3.0 发布键退出槽位后 4 槽：消息 = 槽位 2、我的 = 槽位 3
+            if (slot != 2 && slot != 3) return
             val now = android.os.SystemClock.uptimeMillis()
             val needFull = (slotFitFound.not() && now - lastFullPassUptime >= 60L) ||
                 now - lastFullPassUptime >= 1500L
@@ -521,10 +542,23 @@ object XhsAdapter : AppAdapter {
         // 点击派发接管：应用切页入口（9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2）把切页动作挂在
         // MessageQueue.IdleHandler（f4c.f.r0 / oec.f.S0），玻璃帧循环使主队列整场不空闲 →
         // 切页滞留（v1.4 真机 35 连发实证）。v1.8 经切页入口全管线派发 + after hook 同步
-        // 重放延迟体（见 dispatchTabClick / replayShowPage）；发布键保持穿透式点击
+        // 重放延迟体（见 dispatchTabClick / replayShowPage）
         tabClickHandler = { index, tabViews, container ->
             dispatchTabClick(index, tabViews, container)
         },
+        // 发布键 → 玻璃栏右侧独立圆形**着色**玻璃按钮（extraActionButton 通用通道，小黑盒
+        // №15 同款形态；发布键不再进镜像槽位——原生视图随整栏 suppressNatively alpha=0
+        // 隐藏，无需单独压制）。accent = 加号底色（原图标 drawable 直方图众数，r/cg5.xml
+        // 实证 #FF2442 红）+ icon = 自绘白色圆头十字加号（v3.0.2 用户定案：不使用原图标
+        // 字形——提取真机复验红底残留 + 位图几何偏心，自绘天然居中且免疫运行时 drawable
+        // 形态未知，见 plusIcon / decodePostAccent）；点击 = getIndexPost getter 穿透
+        // （performClick 不检查 isClickable，引擎 clickable 树禁用不影响，v2.2 槽位 2
+        // 即此路径）
+        extraActionButton = ExtraActionButtonSpec(
+            icon = { publishIconDrawable() },
+            accent = { publishAccentColor() },
+            onClick = { dispatchPostClick() },
+        ),
     )
 
     override fun shouldProbe(activity: Activity): Boolean =
@@ -554,10 +588,10 @@ object XhsAdapter : AppAdapter {
         if (bar !is ViewGroup) return items
         for (i in 0 until bar.childCount) {
             val child = bar.getChildAt(i) ?: continue
-            // 第 0 子项是纯 ImageView 装饰条（顶部分割条）；发布中键是 RelativeLayout，
-            // 与 4 个 TabView 一样按槽位整条目镜像
-            if (child is ImageView) continue
-            items.add(child)
+            // 只收 TabView 条目（4 个页签）；第 0 子项是纯 ImageView 装饰条（顶部分割条），
+            // 发布中键是 RelativeLayout——两者都不进玻璃槽位（发布键由 descriptor
+            // extraActionButton 玻璃栏右侧圆形按钮承担，见 onSessionCreated 捕获）
+            if (isTabItem(child)) items.add(child)
         }
         // 条目类锚点失配（应用更新改结构）时返回空列表，探测按未就绪重试，不误装
         if (items.count { isTabItem(it) } < 2) return emptyList()
@@ -600,8 +634,9 @@ object XhsAdapter : AppAdapter {
         zeroContentReserve(activity, facade)
         // 条目顶部设计留白中和：镜像垂直居中（见类 KDoc）
         neutralizeItemTopInset(session, facade)
-        // 发布键图形中心偏移中和（见 raisePostIcon）
-        raisePostIcon(session, facade)
+        // 发布键捕获（extraActionButton 数据源：图标逐帧解析 + 点击回退引用，见
+        // capturePostKey / postIconDrawable / dispatchPostClick）
+        capturePostKey(session, facade)
         // 导航栏 inset 清零：全页全出血（见 installContentInsetsZeroing）
         installContentInsetsZeroing(activity)
         hostActivity = activity
@@ -723,16 +758,18 @@ object XhsAdapter : AppAdapter {
 
     /**
      * 切页派发（v2.2，LiquidTab XhsNavigationState.performTap 同款）：玻璃点击 → 按槽位
-     * 调 `TabBarView.getIndexXxx()` 私有 getter（真实方法名，非混淆类上的稳定锚点）拿
-     * 真实条目视图 → 穿透式 performClick 走应用完整原生管线（throttle/Rx/事件）→ 切页
-     * 入口 after hook 同步重放挂 IdleHandler 的延迟体（growth + setCurrentItem + 懒加载
-     * 激活，见 replayShowPage）。与 LiquidTab 的唯一架构差异：它无帧循环、Idle
-     * Handler 自然执行，重放 hook 不需要；我们帧循环饿死 IdleHandler，重放是卡点修复器。
-     * 回退链：getter 失配 → 直驱降级（explorePager + 自增长 + pending，懒加载缺失可能
-     * 空白，不劣于 v1.7）→ 原穿透式点击（tabViews 槽位视图沿父链）。
+     * 查 SLOT_GETTER_INDICES 调 `TabBarView.getIndexXxx()` 私有 getter（真实方法名，非
+     * 混淆类上的稳定锚点）拿真实条目视图 → 穿透式 performClick 走应用完整原生管线
+     * （throttle/Rx/事件）→ 切页入口 after hook 同步重放挂 IdleHandler 的延迟体
+     * （growth + setCurrentItem + 懒加载激活，见 replayShowPage）。与 LiquidTab 的唯一
+     * 架构差异：它无帧循环、IdleHandler 自然执行，重放 hook 不需要；我们帧循环饿死
+     * IdleHandler，重放是卡点修复器。v3.0 起玻璃栏 4 槽（发布键退出槽位，见
+     * dispatchPostClick），槽位即页序恒等映射。回退链：getter 失配 → 直驱降级
+     * （explorePager + 自增长 + pending，懒加载缺失可能空白，不劣于 v1.7）→ 原穿透式
+     * 点击（tabViews 槽位视图沿父链）。
      */
     private fun dispatchTabClick(index: Int, tabViews: List<View>, container: View) {
-        val tabBarGetter = TAB_GETTERS.getOrNull(index)
+        val tabBarGetter = SLOT_GETTER_INDICES.getOrNull(index)?.let { TAB_GETTERS[it] }
         if (tabBarGetter != null) {
             val target = cachedDeclaredMethod(container.javaClass, tabBarGetter)?.let { getter ->
                 runCatching { getter.invoke(container) as? View }.getOrNull()
@@ -743,20 +780,13 @@ object XhsAdapter : AppAdapter {
             }
         }
         // 降级 1：getter 失配/调用异常 → 直驱 pager（自增长已就绪即秒切；懒加载激活
-        // 缺失，页面可能空白至下一次全管线切页），不劣于 v1.7。
-        val page = when (index) {
-            0 -> 0
-            1 -> 1
-            3 -> 2
-            4 -> 3
-            else -> null
-        }
-        if (page != null) {
-            val pager = explorePager()
-            if (pager != null && switchPagerPage(pager, page)) {
-                hookFacade?.log(android.util.Log.INFO, "xhs tab switch via direct fallback (page=$page)")
-                return
-            }
+        // 缺失，页面可能空白至下一次全管线切页），不劣于 v1.7。发布键退出槽位后
+        // 4 槽 = 4 页恒等映射。
+        val page = index
+        val pager = explorePager()
+        if (pager != null && switchPagerPage(pager, page)) {
+            hookFacade?.log(android.util.Log.INFO, "xhs tab switch via direct fallback (page=$page)")
+            return
         }
         // 降级 2：原穿透式点击（tabViews 槽位视图沿父链向上点到 tabContainer）。
         hookFacade?.log(android.util.Log.INFO, "xhs tab switch via click-through (slot=$index)")
@@ -1034,7 +1064,7 @@ object XhsAdapter : AppAdapter {
     }
 
     /**
-     * 消息(槽位3)/我的(槽位4)页列表余量（LiquidTab XhsNavigationState.onHostPreDraw 同款）：
+     * 消息(槽位2)/我的(槽位3)页列表余量（LiquidTab XhsNavigationState.onHostPreDraw 同款）：
      * 页面 RecyclerView 自身无底部储备，玻璃栏悬浮后列表末端的可滚动区不够——动态给
      * paddingBottom 加"列表底缘到栏顶 + 12dp"的余量并关 clipToPadding，滚动时内容可穿透
      * 绘制进玻璃区；离开页面还原原值。RecyclerView 判定沿类层次向上找 androidx/support
@@ -1048,7 +1078,8 @@ object XhsAdapter : AppAdapter {
         val facade = hookFacade ?: return
         runCatching {
             val slot = session.selectedTabIndex()
-            if (slot != 3 && slot != 4) {
+            // v3.0 发布键退出槽位后 4 槽：消息 = 槽位 2、我的 = 槽位 3
+            if (slot != 2 && slot != 3) {
                 restoreListPadding(facade)
                 restoreViewportFits(facade)
                 detachLayoutReassert()
@@ -1122,7 +1153,7 @@ object XhsAdapter : AppAdapter {
      * 真衬垫承载者由值驱动覆盖）：应用 SystemBarsManager 从 ROOT navigation insets
      * （rootWindowInsets 直读）把小白条高度写入页面容器底部衬垫——content 层派发 insets
      * 清零（installContentInsetsZeroing）只改下发值、拦不住 root 直读通路，页面布局盒被
-     * 衬垫整体抬离玻璃栏区 = 小白条区域无内容。命中两级：①类名锚点——槽位 3（消息页）
+     * 衬垫整体抬离玻璃栏区 = 小白条区域无内容。命中两级：①类名锚点——消息页（玻璃槽位 2）
      * = MessagePageView 非混淆类名（真机实证 pb=54 即小白条 inset）；②值驱动——任何
      * 尺寸达标容器，底部 padding/margin ∈ [inset/2, inset] 即按衬垫处理（覆盖"上滑头部
      * 塌陷时才写入"的滚动期承载者，配合 layoutReassert 拦截）。发现即记录原值并归零，
@@ -1267,31 +1298,181 @@ object XhsAdapter : AppAdapter {
     }
 
     /**
-     * 发布键图形中心偏移中和：见类 KDoc「发布键图形中心偏移中和」。对发布键容器
-     * （tabViews[2]，RelativeLayout）内的首个 ImageView 设 translationY=-8dp 抬回，
-     * 让 + 图形中心从容器 38dp 回到 30dp（镜像居中基准）。仅装配时一次；按压动画
-     * 作用于容器 translationY，不触碰 img。
+     * 发布键捕获（v3.0，extraActionButton 数据源）：发布键已退出玻璃槽位（tabViewsOf
+     * 只收 TabView），按原生 5 槽位结构从容器直接子项捕获——非 ImageView 装饰条且非
+     * TabView 条目 = 发布键 RelativeLayout。捕获失败打一次性 WARN（№03.7 教训 11 口径：
+     * 执行层在跑但逻辑未命中须可区分），成功打 INFO 留结构现场。
      */
-    private fun raisePostIcon(session: GlassSession, facade: HookFacade) {
+    private fun capturePostKey(session: GlassSession, facade: HookFacade) {
         runCatching {
-            val post = session.tabViews.getOrNull(2) as? ViewGroup ?: return
-            if (isTabItem(post)) return
-            var img: ImageView? = null
-            for (i in 0 until post.childCount) {
-                val child = post.getChildAt(i)
-                if (child is ImageView) {
-                    img = child
+            val bar = session.tabContainer as? ViewGroup
+            var post: ViewGroup? = null
+            if (bar != null) {
+                for (i in 0 until bar.childCount) {
+                    val child = bar.getChildAt(i)
+                    if (child is ImageView || isTabItem(child)) continue
+                    post = child as? ViewGroup
                     break
                 }
             }
-            val imageView = img ?: return
-            imageView.translationY = TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP,
-                POST_ICON_RAISE_DP,
-                imageView.resources.displayMetrics,
-            )
-            facade.log(android.util.Log.INFO, "xhs post icon raised by 8dp")
-        }.onFailure { facade.log(android.util.Log.WARN, "xhs raise post icon failed", it) }
+            val key = post
+            if (key == null) {
+                if (!publishKeyWarned) {
+                    publishKeyWarned = true
+                    facade.log(android.util.Log.WARN, "xhs publish key missed (structure changed?)")
+                }
+                return
+            }
+            publishKeyWarned = false
+            postKeyRef = java.lang.ref.WeakReference(key)
+            facade.log(android.util.Log.INFO, "xhs publish key captured: ${key.javaClass.name}")
+        }.onFailure { facade.log(android.util.Log.WARN, "xhs capture publish key failed", it) }
+    }
+
+    /** 发布键锚点未命中告警只发一次（capturePostKey 专用，成功命中后复位）。 */
+    @Volatile
+    private var publishKeyWarned = false
+
+    /**
+     * 每帧调用（extraActionButton.icon）：**自绘加号**（v3.0.2 用户定案：不使用原图标
+     * 字形——v3.0.1 字形提取真机复验红底残留且位图几何偏心，提取路线整体撤除）——白色
+     * 圆头十字按宿主密度绘制成物理像素位图，ExtraIconPainter 按位图 intrinsic 1:1
+     * **居中**呈现。null 仅在发布键未捕获时出现。
+     */
+    private fun publishIconDrawable(): android.graphics.drawable.Drawable? {
+        val group = postKeyRef?.get() ?: return null
+        return plusIcon(group.resources)
+    }
+
+    /**
+     * 每帧调用（extraActionButton.accent）：强调色 = 加号底色（原生图标 = 红色圆角底 +
+     * 白加号，r/cg5.xml 实证 #FF2442 / #FFFFFF），从原图标 drawable 提取（见
+     * [decodePostAccent]）；null = 引擎纯玻璃不着色（静默降级）。
+     */
+    private fun publishAccentColor(): Color? {
+        val group = postKeyRef?.get() as? ViewGroup ?: return null
+        val drawable = postKeyDrawable(group) ?: return null
+        synchronized(postAccentCache) {
+            if (postAccentCache.containsKey(drawable)) return postAccentCache[drawable]
+        }
+        val accent = decodePostAccent(drawable)
+        synchronized(postAccentCache) { postAccentCache[drawable] = accent }
+        return accent
+    }
+
+    /** 发布键首个 ImageView 的当前 drawable（服务端 setPostTabIcon 换图自动跟随）。 */
+    private fun postKeyDrawable(group: ViewGroup): android.graphics.drawable.Drawable? {
+        for (i in 0 until group.childCount) {
+            (group.getChildAt(i) as? ImageView)?.let { return it.drawable }
+        }
+        return null
+    }
+
+    // —— 发布键按钮视觉（v3.0.2，用户定案：自绘加号 + 原图标仅取底色） ——
+
+    /** 自绘加号缓存（按 densityDpi，密度变化即重绘；主线程帧循环专用，无需并发容器）。 */
+    private var plusIconCache: Pair<Int, android.graphics.drawable.Drawable>? = null
+
+    /** 强调色缓存（按原 drawable 实例：服务端换图/深浅色重建自动重算；失败也缓存，
+     *  失败不打每帧重解码——§0.5 B.5 换肤重建映射纪律）。 */
+    private val postAccentCache =
+        java.util.WeakHashMap<android.graphics.drawable.Drawable, Color?>()
+
+    /**
+     * 自绘加号：32dp 透明位图上画白色圆头十字（臂长 9dp + 线宽 3.5dp ≈ 视觉 21.5dp，
+     * 约 64dp 按钮的 1/3）。密度物理像素绘制 + `bitmap.density` 显式回写——
+     * BitmapDrawable intrinsic 按密度换算，ExtraIconPainter 1:1 呈现时尺寸稳定。
+     */
+    private fun plusIcon(resources: android.content.res.Resources): android.graphics.drawable.Drawable {
+        val dpi = resources.displayMetrics.densityDpi
+        plusIconCache?.let { (cachedDpi, drawable) ->
+            if (cachedDpi == dpi) return drawable
+        }
+        val d = resources.displayMetrics.density
+        val size = (32f * d).toInt().coerceAtLeast(1)
+        val arm = 9f * d
+        val stroke = 3.5f * d
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        bitmap.density = dpi
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = stroke
+            color = android.graphics.Color.WHITE
+        }
+        val center = size / 2f
+        canvas.drawLine(center - arm, center, center + arm, center, paint)
+        canvas.drawLine(center, center - arm, center, center + arm, paint)
+        val drawable = BitmapDrawable(resources, bitmap)
+        plusIconCache = dpi to drawable
+        return drawable
+    }
+
+    /**
+     * 底色提取（仅取强调色，字形已不再来自原图标）：不透明像素（alpha ≥ 128）r/g/b 各
+     * 5 位量化直方图众数——红底占绝对多数、白加号 ~8% 面积不动摇众数 → 众数 = 精确底色
+     * （矢量内边距使位图四边透明，不参与统计；服务端换图/深浅色重建 drawable 自动重算）。
+     * 全透明/尺寸非法/解码异常 → null（缓存，静默降级纯玻璃）。
+     */
+    private fun decodePostAccent(
+        drawable: android.graphics.drawable.Drawable,
+    ): Color? = runCatching {
+        val w = drawable.intrinsicWidth
+        val h = drawable.intrinsicHeight
+        if (w <= 0 || h <= 0) return null
+        val src = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(src)
+        val baseBounds = Rect(drawable.bounds)
+        drawable.setBounds(0, 0, w, h)
+        drawable.draw(canvas)
+        drawable.bounds = baseBounds
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        val hist = IntArray(1 shl 15)
+        var opaque = 0
+        for (p in pixels) {
+            if ((p ushr 24) < 128) continue
+            hist[(((p shr 19) and 0x1F) shl 10) or (((p shr 11) and 0x1F) shl 5) or ((p shr 3) and 0x1F)]++
+            opaque++
+        }
+        if (opaque == 0) return null
+        var modeIdx = 0
+        var modeCount = 0
+        for (i in hist.indices) {
+            if (hist[i] > modeCount) {
+                modeCount = hist[i]
+                modeIdx = i
+            }
+        }
+        Color(
+            ((modeIdx shr 10) and 0x1F) shl 3,
+            ((modeIdx shr 5) and 0x1F) shl 3,
+            (modeIdx and 0x1F) shl 3,
+        )
+    }.getOrNull()
+
+    /**
+     * 发布键点击派发（extraActionButton.onClick）：经 `getIndexPost()` 私有 getter（真实
+     * 方法名稳定锚点，cachedDeclaredMethod 解析）拿真实发布键视图 → 穿透式 performClick
+     * 走应用完整原生管线（登录/广告门控保留）——v2.2 槽位 2 同款路径，performClick 不
+     * 检查 isClickable，引擎 clickable 树禁用不影响。getter 失配回退装配期捕获的
+     * postKeyRef；两路全失效打 WARN 留痕。
+     */
+    private fun dispatchPostClick() {
+        val container = activeSession?.tabContainer
+        val getterTarget = container?.let { bar ->
+            cachedDeclaredMethod(bar.javaClass, TAB_GETTERS[2])?.let { getter ->
+                runCatching { getter.invoke(bar) as? View }.getOrNull()
+            }
+        }
+        val target = getterTarget ?: postKeyRef?.get()
+        val boundary = container ?: target?.parent as? View ?: target
+        if (target != null && boundary != null && performClickThroughTab(target, boundary)) {
+            hookFacade?.log(android.util.Log.INFO, "xhs publish via native pipeline")
+            return
+        }
+        hookFacade?.log(android.util.Log.WARN, "xhs publish dispatch failed (post key gone?)")
     }
 
     /**
