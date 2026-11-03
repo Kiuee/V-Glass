@@ -35,11 +35,13 @@ import java.lang.ref.WeakReference
  *   （选中=主题色、未选中=灰）；② 旧路径：l() 添加 静态未选中 res + 主题色染色的
  *   selected_anim Lottie。应用点击换图 = 未选 r(item) / 选中 O(item)（**携带
  *   `U(drawable)`=start() 状态动画副作用**，是正式点击的动画重播入口）。拖动悬停
- *   预览注入 [session.previewIconSwapper]：不走 r/O，按库"编程选中换图" `W()` 的
- *   落定配方直驱——checked = 图标对选中符号 `i` + setAnimProgress(1.0f)、unchecked =
- *   未选中符号 `h` + setAnimProgress(1.0f)（`n()` 创建落定配方），映射全缺失才降级
- *   r/O（见 swapPreviewIcon）；换主题（HealthThemeManager → a0/s0 重放）会整体重建
- *   映射——每次换图前实时解析、不缓存。
+ *   预览 = [enforcePreviewIcons] 以条目 isSelected 为真值源逐帧强制收敛（事件路
+ *   previewIconSwapper + 帧循环路 mirrorVisibleGate 双入口）：不走 r/O，按库"编程
+ *   选中换图" `W()` 的落定配方实例直挂 iconView——checked = 图标对选中符号 `i`（已
+ *   预驱动 1.0f）、unchecked = 未选中符号 `h`，映射降级链 d/g/b/a-res；映射全缺失
+ *   该条目跳过（标签强调色仍由 setChecked 原生驱动）；换主题（HealthThemeManager →
+ *   a0/s0 重放）会整体重建映射——映射每次实时解析、不缓存，重建 = 新实例 = 引用
+ *   失配 = 下一帧自动重挂（自愈）。
  * - 切页链路：条目 performClick → menuLayout 监听 → 未选中 I(item)（r(旧)+O(新)+p()
  *   回调 OnItemSelectedListener → ViewPager2.setCurrentItem）；已选中走
  *   OnItemClickListener → MainTitleClick 事件（回顶类）。通用 performClick 转发全覆盖，
@@ -83,10 +85,11 @@ object VivoHealthAdapter : AppAdapter {
      *  记录原挂载位置与可见性，会话 restore 重挂。 */
     private val hiddenDecorations = ArrayList<DecorationState>(2)
 
-    /** 预览换图同态去重（条目 → 最近应用的 checked 态）：换图引擎只在选中态翻转时调用，
-     *  但悬停边界抖动（原 tab ⇄ 悬停 tab 往返）与重放路径的同态重复调用会反复 setIcon——
-     *  同态跳过（手机管家同款去重）。 */
-    private val lastAppliedChecked = java.util.WeakHashMap<View, Boolean>()
+    /** 预览图标状态强制缓存：条目 → 图标 ImageView（逐帧路径免 findViewById）、
+     *  resId → 已解析静态 drawable（引用相等判据需要稳定实例——`getDrawable` 每次
+     *  新实例会让幂等判据失效而逐帧重挂）。恢复期主题重放清 res 缓存重建。 */
+    private val iconViewCache = java.util.WeakHashMap<View, android.widget.ImageView?>()
+    private val settledResCache = java.util.WeakHashMap<Int, android.graphics.drawable.Drawable>()
 
     private class DecorationState(
         val view: View,
@@ -208,7 +211,9 @@ object VivoHealthAdapter : AppAdapter {
         // 主题重放/未知路径把 alpha 写回 1 的纠错（帧循环恢复后由 mirrorVisibleGate 逐帧接管）
         barRef?.get()?.takeIf { it.isAttachedToWindow }?.let { if (it.alpha != 0f) it.alpha = 0f }
         // 主题重放（可在恢复期发生，如控制中心切深色后返回）会重建图标对、新选中符号
-        // 进度归零——恢复期重驱动（幂等，已落定的驱动 = 无操作）
+        // 进度归零——恢复期重驱动（幂等，已落定的驱动 = 无操作）；res 降级缓存一并清
+        // （动态色主题下同名 res 的解析结果随主题变）
+        settledResCache.clear()
         sessionRef?.get()?.let { preDriveSelectedSymbols(it) }
     }
 
@@ -285,17 +290,21 @@ object VivoHealthAdapter : AppAdapter {
         earlySuppressed.remove(session.tabContainer)
         // 选中符号预驱动（首悬停发浅修复，见 preDriveSelectedSymbols）
         preDriveSelectedSymbols(session)
-        // 预览图标换图（拖动悬停）：引擎 setTabChecked 翻转 setChecked 后调用——悬停 tab
-        // 与被拖离的原选中按库 W()/n() 落定配方直驱（映射 i/h 符号 + setAnimProgress 1.0f），
-        // **不走 O()/r()**（其 U(start) 会重播状态动画）；映射全缺失才降级 r/O。方法每次
-        // 换图前实时解析：换主题（HealthThemeManager → a0/s0 重放）会整体重建 F 映射，不缓存。
-        session.previewIconSwapper = { index, checked ->
-            swapPreviewIcon(session, index, checked)
+        // 预览图标换图（拖动悬停）：引擎 setTabChecked 翻转 setChecked 后调用 + 帧循环
+        // 逐帧收敛双路（见 enforcePreviewIcons）——以 isSelected 为真值源统一收敛到
+        // 库 W()/n() 落定配方实例（映射 i/h 符号，已由 preDriveSelectedSymbols 预驱动），
+        // **不走 O()/r()**（其 U(start) 会重播状态动画）；映射每次实时解析：换主题
+        // （HealthThemeManager → a0/s0 重放）会整体重建 F 映射，重建 = 新实例 → 引用
+        // 失配 → 下一帧自动重挂（自愈），不缓存。
+        session.previewIconSwapper = { _, _ ->
+            enforcePreviewIcons(session)
         }
-        // 压制重申 + 装饰重申（帧循环每帧执行，仅失配时写入）：应用无确证隐藏路径，
+        // 压制重申 + 装饰重申（帧循环每帧执行，仅失配时写入）+ 预览图标逐帧收敛（一次性
+        // apply 失败/被顶掉的自愈通道，闹钟 №16.7 教训 3 同款）：应用无确证隐藏路径，
         // 恒返回 true（barWanted 不变）；顺带检出运行期新加的装饰即移除。
         session.mirrorVisibleGate = {
             reassertSuppressions()
+            enforcePreviewIcons(session)
             true
         }
         session.onAuxGlassRestore = { restoreDecorations() }
@@ -343,35 +352,59 @@ object VivoHealthAdapter : AppAdapter {
         parent.removeView(view)
     }
 
-    /** 预览换图（拖动悬停，§1.2 统一语义 = 悬停 tab 选中**落定**外观、离开恢复未选中落定）：
-     *  **不走 `O(item)`/`r(item)`**（库点击路径换图，符号分支 = `U(drawable)` =
-     *  `FontSymbolDrawable.start()` **状态动画**——真机表现为悬停期动画不断重播）；改按
-     *  库自身"编程选中换图" `W()` 的落定配方直驱：读底栏字段 `F`（`Map<VNavMenuItem,
-     *  LottieAttribute>`，本应用库未混淆、字段真名）取图标对：
-     *  - checked → 选中符号 `i`：条目 `setIcon(i)` + `setAnimProgress(1.0f)`（`i` 已由
-     *    [preDriveSelectedSymbols] 预驱动到落定进度，此处驱动 = 无操作 = 瞬时落定；
-     *    与文件管理 §9.2 `r(drawable,1.0f)` 直驱先例同族）；`i` 缺失按 `W()` 取值序
-     *    降级静态 `d` → 单 drawable `g` → 兜底 `O(item)`（静默降级为重播）。
-     *  - unchecked → 未选中符号 `h`：`setIcon(h)` + `setAnimProgress(1.0f)`（库 `n()` 创建
-     *    条目时对未选中符号的同款落定配方——`o(drawable2, 1.0f)`，非 0.0）；`h` 缺失按
-     *    `r()` 取值序降级静态 `b` → res `a` → 兜底 `r(item)`。
-     *  - 同态去重（[lastAppliedChecked]）跳过重复调用；映射/方法每次实时解析（换主题
-     *    HealthThemeManager → a0/s0 重放会整体重建映射），任一环节失败静默跳过（表现 =
-     *    预览图标停留原 drawable，无崩溃）。 */
-    private fun swapPreviewIcon(session: GlassSession, index: Int, checked: Boolean) {
-        val item = session.tabViews.getOrNull(index) ?: return
+    /** 预览图标强制收敛（拖动悬停，§1.2 统一语义 = 悬停 tab 选中**落定**外观、离开
+     *  恢复未选中落定）：以条目 `isSelected` 为**唯一真值源**，把全部条目的 iconView
+     *  收敛到期望落定 drawable（`drawable === desired` 引用相等 = 已就位零写入，天然
+     *  幂等）。仅 [GlassSession.isTabPreviewActive] 期间执行——正式切页的应用换图不被
+     *  顶掉。期望实例来自底栏字段 `F`（`Map<VNavMenuItem, LottieAttribute>`，每次实时
+     *  解析——换主题 HealthThemeManager → a0/s0 重放会整体重建映射，映射重建 = 新实例
+     *  → 引用失配 → 下一帧自动重挂，自愈）：
+     *  - checked → 选中符号 `i`（已由 [preDriveSelectedSymbols] 预驱动到落定进度，挂载
+     *    即瞬时落定）；`i` 缺失按 `W()` 取值序降级静态 `d` → 单 drawable `g`；
+     *  - unchecked → 未选中符号 `h`（库 `n()` 创建配方落定 = 1.0f）；`h` 缺失降级静态
+     *    `b` → res `a`（经 [settledResCache] 稳定实例）。
+     *  **不走 `O(item)`/`r(item)` 兜底**（库点击路径换图携带 `U(drawable)`=
+     *  `FontSymbolDrawable.start()` 状态动画，逐帧路径复用即动画重播，№11.7 教训 2）；
+     *  **直挂 iconView 绕过 `VNavMenuItem.setIcon`**（其开头实例去重会让同源二次换入
+     *  提前 return，闹钟 №16.7 教训 1 同款陷阱）。
+     *  **为何逐帧**（闹钟 №16.7 教训 3 同款）：事件驱动换图是"一次性 apply"——引擎对
+     *  同一悬停目标去重后不再补发事件，一次 apply 失败/被顶掉后悬停期间没有第二次
+     *  机会；逐帧把图标外观变成 isSelected 的纯函数，任何一帧意外状态 ≤16ms 自愈。 */
+    private fun enforcePreviewIcons(session: GlassSession) {
+        if (!session.isTabPreviewActive) return
         val bar = barRef?.get() ?: return
-        synchronized(lastAppliedChecked) {
-            if (lastAppliedChecked[item] == checked) return
+        for (item in session.tabViews) {
+            val iconView = iconViewCache.getOrPut(item) { iconViewOf(item) } ?: continue
+            val desired = desiredIconFor(bar, item, item.isSelected) ?: continue
+            if (iconView.drawable === desired) continue
+            runCatching { iconView.setImageDrawable(desired) }
         }
-        val applied = runCatching {
-            val pair = iconPairOf(bar, item)
-            if (checked) applyCheckedSettled(item, pair) else applyUncheckedSettled(item, pair)
-            true
-        }.getOrDefault(false)
-        if (applied) {
-            synchronized(lastAppliedChecked) { lastAppliedChecked[item] = checked }
+    }
+
+    /** 期望落定 drawable（映射/字段每次实时解析，任一环节失败返回 null = 该条目本帧
+     *  跳过，标签强调色切换仍由 setChecked 原生驱动）。 */
+    private fun desiredIconFor(bar: View, item: View, checked: Boolean): android.graphics.drawable.Drawable? {
+        val pair = iconPairOf(bar, item) ?: return null
+        val direct = if (checked) {
+            drawableField(pair, "i") ?: drawableField(pair, "d") ?: drawableField(pair, "g")
+        } else {
+            drawableField(pair, "h") ?: drawableField(pair, "b")
         }
+        if (direct != null) return direct
+        if (!checked) {
+            val resId = intField(pair, "a")
+            if (resId != 0) {
+                return settledResCache.getOrPut(resId) { item.context.getDrawable(resId) }
+            }
+        }
+        return null
+    }
+
+    /** 条目的图标 ImageView（originui 库公共元素 id）。 */
+    private fun iconViewOf(item: View): android.widget.ImageView? {
+        val iconId = idByName(item, ICON_ID_NAME)
+        if (iconId == 0) return null
+        return item.findViewById<View>(iconId) as? android.widget.ImageView
     }
 
     /** 选中符号预驱动（装配/恢复期，首悬停发浅修复，真机 2026-10-25）：图标对的选中
@@ -405,37 +438,6 @@ object VivoHealthAdapter : AppAdapter {
         }.getOrNull()
     }
 
-    /** checked 落定外观 = 库 `W()` 符号分支配方：选中符号 `i` + setAnimProgress(1.0f)；
-     *  降级链 d 静态 → g 单 drawable → `O(item)`（重播，仅全缺失兜底）。 */
-    private fun applyCheckedSettled(item: View, pair: Any?) {
-        drawableField(pair, "i")?.let {
-            itemSetIcon(item, it)
-            driveSymbolProgress(it, 1.0f)
-            return
-        }
-        drawableField(pair, "d")?.let { itemSetIcon(item, it); return }
-        drawableField(pair, "g")?.let { itemSetIcon(item, it); return }
-        invokeItemSwap(item, "O")
-    }
-
-    /** unchecked 落定外观 = 库 `n()` 创建配方：未选中符号 `h` + setAnimProgress(1.0f)
-     *  （**非 0.0**——`n()` 对未选中符号的落定即 1.0，两枚符号是不同字形码、各自 1.0 =
-     *  各自落定态）；降级链 b 静态 → res `a` → `r(item)`（重播，仅全缺失兜底）。 */
-    private fun applyUncheckedSettled(item: View, pair: Any?) {
-        drawableField(pair, "h")?.let {
-            itemSetIcon(item, it)
-            driveSymbolProgress(it, 1.0f)
-            return
-        }
-        drawableField(pair, "b")?.let { itemSetIcon(item, it); return }
-        val resId = intField(pair, "a")
-        if (resId != 0) {
-            itemSetIcon(item, resId)
-            return
-        }
-        invokeItemSwap(item, "r")
-    }
-
     private fun drawableField(pair: Any?, name: String): android.graphics.drawable.Drawable? =
         pair?.let {
             runCatching {
@@ -450,21 +452,8 @@ object VivoHealthAdapter : AppAdapter {
         }.getOrDefault(0)
     } ?: 0
 
-    /** 条目换图（`VNavMenuItem.setIcon(Drawable/int)` public 非混淆）。 */
-    private fun itemSetIcon(item: View, icon: android.graphics.drawable.Drawable) {
-        item.javaClass.getMethod("setIcon", android.graphics.drawable.Drawable::class.java)
-            .apply { isAccessible = true }
-            .invoke(item, icon)
-    }
-
-    private fun itemSetIcon(item: View, resId: Int) {
-        item.javaClass.getMethod("setIcon", Int::class.javaPrimitiveType)
-            .apply { isAccessible = true }
-            .invoke(item, resId)
-    }
-
     /** 符号进度直驱（`FontSymbolDrawable.setAnimProgress(float)`，与库 `W()` 落定分支/
-     *  文件管理 §9.2 `r(drawable,1.0f)` 同款；非符号 drawable 跳过——静态图无进度态）。 */
+     *  文件管理 §9.2 `r(drawable,1.0f)` 直驱先例同款；非符号 drawable 跳过——静态图无进度态）。 */
     private fun driveSymbolProgress(drawable: android.graphics.drawable.Drawable, progress: Float) {
         if (!drawable.javaClass.name.contains("FontSymbolDrawable")) return
         runCatching {
@@ -472,17 +461,6 @@ object VivoHealthAdapter : AppAdapter {
                 .apply { isAccessible = true }
                 .invoke(drawable, progress)
         }
-    }
-
-    /** 兜底换图（`O` 选中 / `r` 反选，public 非混淆；携带 `U(start)` 状态动画副作用，
-     *  仅映射读取全失败时降级使用）。 */
-    private fun invokeItemSwap(item: View, method: String) {
-        val bar = barRef?.get() ?: return
-        val barClass = Class.forName(BAR_CLASS_ORIGIN, true, bar.context.classLoader)
-        val itemClass = Class.forName(ITEM_CLASS_ORIGIN, true, bar.context.classLoader)
-        barClass.getDeclaredMethod(method, itemClass)
-            .apply { isAccessible = true }
-            .invoke(bar, item)
     }
 
     /** 会话还原（模块关闭/视图树重建）：重新挂载被移除的装饰（倒序恢复原挂载位置与
