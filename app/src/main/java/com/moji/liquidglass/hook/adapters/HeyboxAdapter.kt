@@ -103,6 +103,15 @@ import kotlin.math.abs
  *   **同栈补位**（x.j0 类覆写在输入事件里随时发生，补位先于任何 traversal，窗口永远
  *   看不到缺位状态；重入时 flags 已在位不再写入，天然收敛）；玻璃栏抬升 = 真实导航栏
  *   inset 会话级缓存（`GlassInstaller.navInsetProvider`，芒果TV/淘宝/支付宝同款）。
+ *   **补位必须按宿主窗口收口**（真机"游戏库→游戏详情页底部被小白条遮挡"修复）：
+ *   `View.setSystemUiVisibility` 是进程级 hook，不区分窗口——详情页宿主
+ *   `ChannelsDetailActivity`（`x.j0` 同样只设 1280）按原生安全区布局（
+ *   `fragment_game_detail` 的 `ll_bottom_bar` alignParentBottom、全页无导航条衬垫），
+ *   一旦被补上 LAYOUT_HIDE_NAVIGATION，窗口延到导航条后底部内容直接顶到屏幕底被
+ *   遮挡。修复 = onTabActivityResumed 登记 MainActivity decor 弱引用，补位回调仅对
+ *   `view.rootView === decor` 生效；onResume 前/宿主窗口重建以 context 链 Activity
+ *   类名兜底（见 isHostWindow），非宿主窗口一次性留痕
+ *   `window-extend: skipped non-host window`。
  * - 导航栏透明：onResume `applyTransparentNavigationBar`（§1.1 通用件）——窗口延伸后
  *   透明导航栏才真正生效（小白条条带透出全出血内容）。无设色收口需求（未发现换肤
  *   设色路径收口点，真机反馈再补吞色 hook）。
@@ -274,9 +283,12 @@ object HeyboxAdapter : AppAdapter {
     override fun onTabActivityResumed(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {
         AppAdapter.applyTransparentNavigationBar(activity, config)
         cachedNavInsetLift = -1
-        // 窗口延伸（№14.2 配方）：每次 onResume 重设（应用可能在 onCreate 后改回）
+        // 窗口延伸（№14.2 配方）：每次 onResume 重设（应用可能在 onCreate 后改回）。
+        // 同时登记宿主窗口（decor 弱引用）——补位 hook 只服务这一窗口，详情页等
+        // 无玻璃栏页面不得被延进导航条（见 installAppHooks ④ / isHostWindow）。
         runCatching {
             val decor = activity.window?.decorView ?: return
+            tabDecorRef = java.lang.ref.WeakReference(decor)
             if (decor.systemUiVisibility and REQUIRED_LAYOUT_FLAGS != REQUIRED_LAYOUT_FLAGS) {
                 decor.systemUiVisibility = decor.systemUiVisibility or REQUIRED_LAYOUT_FLAGS
                 decor.requestApplyInsets()
@@ -389,12 +401,20 @@ object HeyboxAdapter : AppAdapter {
         //    traversal 用缺位值重排 = 小白条区内容闪断回缩。after 同栈补位先于任何
         //    traversal，窗口永远看不到缺位状态；重入时 flags 已在位不再写入，天然收敛。
         //    应用重写的是状态栏位（0x500），读改写保留其他位，与此补位兼容。
+        //    **作用域 = 玻璃栏宿主窗口**：平台 hook 进程级生效，详情页宿主
+        //    ChannelsDetailActivity / 编辑器等页面按原生安全区布局（无导航条衬垫），
+        //    一并补 LAYOUT_HIDE_NAVIGATION 会让其底部内容顶到屏幕底被小白条遮挡
+        //    （真机"游戏库→游戏详情页"实证，№15.7）。非宿主窗口直接放行 + 一次性留痕。
         runCatching {
             val setSui = View::class.java.getDeclaredMethod(
                 "setSystemUiVisibility", Int::class.javaPrimitiveType,
             )
             facade.around(setSui, null, { call ->
                 val view = call.thisObj as? View ?: return@around null
+                if (!isHostWindow(view)) {
+                    logNonHostWindowOnce(view, facade)
+                    return@around null
+                }
                 runCatching {
                     if (view.systemUiVisibility and REQUIRED_LAYOUT_FLAGS != REQUIRED_LAYOUT_FLAGS) {
                         view.systemUiVisibility = view.systemUiVisibility or REQUIRED_LAYOUT_FLAGS
@@ -402,7 +422,7 @@ object HeyboxAdapter : AppAdapter {
                 }
                 null
             })
-            facade.log(android.util.Log.INFO, "hooked View.setSystemUiVisibility: layout bits re-ORed in-stack")
+            facade.log(android.util.Log.INFO, "hooked View.setSystemUiVisibility: layout bits re-ORed in-stack (host window scoped)")
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook setSystemUiVisibility failed", it)
         }
@@ -467,6 +487,49 @@ object HeyboxAdapter : AppAdapter {
      *  只设状态栏位（x.j0 = 0x500），此二位补齐后内容画进小白条区域。 */
     private val REQUIRED_LAYOUT_FLAGS = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
         View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+
+    /** 玻璃栏宿主窗口（MainActivity decor，onTabActivityResumed 每次恢复期刷新；弱引用
+     *  随 Activity 回收）。窗口延伸同栈补位只服务这一窗口——详情页/编辑器等无玻璃栏
+     *  页面按原生安全区布局，一并延伸会让底部内容顶到屏幕底被导航条遮挡（真机实证）。 */
+    @Volatile private var tabDecorRef: java.lang.ref.WeakReference<View>? = null
+
+    /** 非宿主窗口跳过留痕（一窗口一次）：x.j0 全应用高频调用，逐次打日志会刷屏；
+     *  弱键随窗口回收自动清空（读写 synchronized 兜底）。 */
+    private val nonHostWindows = java.util.WeakHashMap<View, Boolean>()
+
+    /** 是否玻璃栏宿主窗口。①宿主 decor 已登记且仍挂窗：严格按根视图 identity 判定
+     *  （MainActivity 内的弹窗/对话框有独立 decor，不延伸）；②冷启动 onResume 前或
+     *  宿主窗口重建（decor 未登记/旧窗口已解挂）：按 View.context 链 Activity 类名
+     *  兜底——x.j0 在 MainActivity.onCreate 即调用，不能等到 onResume 才补位。
+     *  兜底分支**不登记** decor：调用点未必是根视图（可能尚未挂树），误登记会污染
+     *  后续 identity 判定；宿主 decor 由 onTabActivityResumed（onResume 之后）登记。 */
+    private fun isHostWindow(view: View): Boolean {
+        val host = tabDecorRef?.get()
+        if (host != null && host.isAttachedToWindow) return view.rootView === host
+        return contextActivityOrNull(view)?.javaClass?.name == TAB_ACTIVITY
+    }
+
+    /** View.context 链上溯 Activity（AppCompat/Theme 包装层透明）。上限防异常环。 */
+    private fun contextActivityOrNull(view: View): Activity? {
+        var ctx: android.content.Context? = view.context
+        var guard = 0
+        while (ctx is android.content.ContextWrapper && guard++ < 16) {
+            if (ctx is Activity) return ctx
+            ctx = ctx.baseContext
+        }
+        return null
+    }
+
+    /** 非宿主窗口一次性留痕（带 Activity 类名，排障时可确认"详情页跳过延伸"生效）。 */
+    private fun logNonHostWindowOnce(view: View, facade: HookFacade) {
+        val decor = view.rootView
+        synchronized(nonHostWindows) {
+            if (nonHostWindows.containsKey(decor)) return
+            nonHostWindows[decor] = true
+        }
+        val name = contextActivityOrNull(view)?.javaClass?.name ?: decor.context.javaClass.name
+        facade.log(android.util.Log.INFO, "heybox window-extend: skipped non-host window ($name)")
+    }
 
     /** 玻璃栏抬升缓存（-1 = 未解析，onResume 重置）：手势导航下该值是常量；切页 insets
      *  重派发期间瞬时读数跳变会让以抬升为源的几何抖动。 */
