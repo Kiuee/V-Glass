@@ -826,10 +826,9 @@ object VivoSpaceAdapter : AppAdapter {
         // 全无日志）——onSessionCreated 本身在主线程且 activity 就绪，直接启动监视器，
         // 开屏弹窗门控/常驻清扫/footer 钳制不再单依赖 spy 的注册成败。
         startMonitor(activity)
-        // 背景采样去重（v2.2，与小红书/高德/相册对齐，模块配置 lightweightSampling 可
-        // 远程关）：三个玻璃节点每帧各自对 appRoot 全树 draw → 1× RenderNode 录制 +
-        // 三节点回放（信息流/资讯页重内容滚动卡顿主源）。
-        session.dedupeBackdropSampling = config().lightweightSampling
+        // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；
+        // lightweightSampling 远程可关）——1× RenderNode 录制 + 三节点回放
+        // （信息流/资讯页重内容滚动卡顿主源，原 3× 全树 draw/帧）。
         // 冷启动全屏弹窗（popup_container）pending：overlay 挂载即隐藏,弹窗关闭后出现
         // （判定与同步逻辑见 syncGlassOverlayWithPopup,监视器每拍持续驱动）
         splashPending = true

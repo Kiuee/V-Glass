@@ -180,9 +180,9 @@ object GalleryAdapter : AppAdapter {
         session.mirrorVisibleGate = {
             barWantedVisible && !photoPageActive && !selectionModeActive()
         }
-        // 背景采样去重：照片网格为 GL 渲染，三玻璃节点各自直绘采样 = 每帧 3 次 GL 绘制，
-        // 滑动掉帧主因；开启后每 tick 单次录制全宽条带、三节点回放（远程配置可关）
-        session.dedupeBackdropSampling = config().lightweightSampling
+        // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；远程配置
+        // lightweightSampling 可关）。照片网格为 GL 渲染，去重后每 tick 单次录制条带、
+        // 三节点回放（GL 整屏重绘 3 次 → 1 次）
         // 实时显示列表采样：相册 `view.draw(canvas)` 会进入 GLRootView.onDraw 把整屏照片
         // 网格重画一遍（主线程每帧重编码，低速滑动掉帧直接可见）。改为引用内容视图自身
         // 已录制的 RenderNode：条带只在几何变化时重录，其余帧纯回放，内容仍是当帧实时

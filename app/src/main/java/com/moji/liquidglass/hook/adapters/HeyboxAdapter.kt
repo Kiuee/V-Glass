@@ -434,8 +434,8 @@ object HeyboxAdapter : AppAdapter {
         config: () -> ModuleConfig,
     ) {
         activeSessionRef = java.lang.ref.WeakReference(session)
-        // 背景采样去重（微博/小红书对齐，模块配置 lightweightSampling 可远程关）
-        session.dedupeBackdropSampling = config().lightweightSampling
+        // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；
+        // lightweightSampling 远程可关）
         // 采样冻结（滑动期）：持续活动检测门控（见采样冻结注释）——上滑新绑定条目
         // 落在条带内导致逐帧外部 draw 重付首建成本的上滑卡顿修复
         session.backdropFreezeGate = { backdropFreezeGate() }

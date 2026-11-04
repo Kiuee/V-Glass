@@ -310,6 +310,9 @@ object TargetHook {
                 session.idleFrameSleepEnabled = true
                 session.logger?.invoke("idle decay + deep idle (1Hz frame sleep) enabled")
             }
+            // 采样去重统一设置（唯一设置点，默认开）：条带录制+回放（1×/tick）替代
+            // 各节点全树直绘（3×/tick），轻量采样配置远程可关
+            session.dedupeBackdropSampling = config().lightweightSampling
             AppAdapter.registerActivitySignalSession(session)
             logTargetVersion(activity, adapter, facade)
             GlassInstaller.glassStyle = GlassStyle.fromConfig(config())

@@ -141,12 +141,15 @@ class GlassSession(
     @Volatile
     var auxGlassShape: ((View) -> androidx.compose.ui.graphics.Shape)? = null
 
-    /** 背景采样去重（重内容页优化，适配器按配置打开）：true 时 ClippedViewBackdrop 每
-     *  tick 只把内容条带录制一次（RenderNode），三个玻璃节点回放同一录制——相册照片
-     *  网格为 GL 渲染，采样即触发 GL 绘制，3 次/帧 → 1 次/帧。false 保持各自直绘
-     *  （默认；商店路径不变）。 */
+    /** 背景采样去重（TargetHook 会话创建期统一设置 = 唯一设置点，默认 true）：true 时
+     *  ClippedViewBackdrop 每 tick 只把内容条带录制一次（RenderNode），三个玻璃节点
+     *  回放同一录制——与直绘逐像素等价，全树遍历 3 次/tick → 1 次/tick（未开启时
+     *  drawDirect 每 tick 三次全树单参直绘 = "全屏采样"级开销，GL/TextureView 内容页
+     *  更是整屏内容重绘）。false = 各自直绘（配置 lightweightSampling 远程关，视觉
+     *  异常回退）。跨 Surface 重建的回放空窗由 TargetHook onResume invalidateBackdrop
+     *  覆盖。 */
     @Volatile
-    var dedupeBackdropSampling: Boolean = false
+    var dedupeBackdropSampling: Boolean = true
 
     /** 实时显示列表采样（默认 false = 每帧 `view.draw()` 重编码内容树，既有行为逐位不变，
      *  §0.4）。去重开启时生效：改为引用内容视图自身已录制的 `RenderNode`（隐藏 API

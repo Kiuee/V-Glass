@@ -338,8 +338,8 @@ object AmapAdapter : AppAdapter {
             val bar = session.tabContainer
             bar.isShown && bar.translationY < bar.height * 0.5f
         }
-        // 采样去重：地图为 GL（TextureView）内容，采样即触发 GL 绘制，3 次/帧 → 1 次/帧
-        session.dedupeBackdropSampling = config().lightweightSampling
+        // 采样去重：地图为 GL（TextureView）内容，采样即触发 GL 绘制——由 TargetHook
+        // 会话创建期统一设置（引擎单管线，默认开；远程配置 lightweightSampling 可关）
         neutralizeItemDecorations(session, facade)
     }
 

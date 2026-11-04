@@ -227,9 +227,8 @@ object VivoNotesAdapter : AppAdapter {
         facade: HookFacade,
         config: () -> ModuleConfig,
     ) {
-        // 背景采样去重（与高德/相册/微博/小红书/官网同款配置，模块可远程关）：
+        // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开）——
         // 笔记/待办重内容页 3× 全树绘制/帧 → 1× RenderNode 录制 + 三节点回放
-        session.dedupeBackdropSampling = config().lightweightSampling
         // 显隐跟随（微博/小红书同款 Y 门控）：s0(boolean) 对 nav_container 做 translationY
         // 0 ↔ 高度+小白条 动画（多选进出）；侧边抽屉打开的位移含 70dp+小白条 的 Y 分量
         // （Notes$c.a(f) 侧滑进度回调）——两种场景 translationY 都过半，默认 Y 门控全覆盖

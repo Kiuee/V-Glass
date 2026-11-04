@@ -612,11 +612,9 @@ object XhsAdapter : AppAdapter {
             val bar = session.tabContainer
             bar.isShown && bar.translationY < bar.height * 0.5f
         }
-        // 背景采样去重（v2.1，高德/相册同款配置，模块配置 lightweightSampling 可远程关）：
-        // 默认实现下 vibrancy/折射副本/液泡三个玻璃节点每帧各自对 appRoot 全树 draw——
-        // 信息流是重内容页，3×全树绘制/帧是滚动卡顿主源；开启后每帧录制一次 RenderNode、
-        // 三节点回放同一录制（3→1）。
-        session.dedupeBackdropSampling = config().lightweightSampling
+        // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；
+        // lightweightSampling 远程可关）—— vibrancy/折射副本/液泡三节点回放同一
+        // 录制（3→1，信息流重内容页 3×全树绘制/帧曾是滚动卡顿主源）。
         // 取证：记录底栏在窗口中的父链。资源 id/布局名全混淆，静态分析无法定位挂载者，
         // 运行期父链是应用更新后底栏失配排障的第一现场
         runCatching {
