@@ -56,28 +56,20 @@ object AppStoreAdapter : AppAdapter {
     private val handler = Handler(Looper.getMainLooper())
     private val extractor by lazy { TabExtractor(descriptor) }
 
-    // 事件驱动 tick 的内容重绘信号源：内容容器 onDraw（滚动/翻页每帧触发、静止不触发）
-    // + LottieAnimationView（首页刷新 Lottie 动画期间镜像图标保持跟随）
-    private val contentSignalClasses = listOf(
+    /**
+     * 应用专属内容活动信号类（引擎单管线声明，hook/分发/降帧由引擎统一负责）：
+     * 自研内容容器 onDraw（滚动/翻页每帧触发、静止不触发）。Lottie 图标动画不在此列——
+     * 中央默认列表的 LottieAnimationView walk-up 落 ImageView.onDraw，已覆盖全部
+     * ImageView 实例（含 Lottie 视图）。
+     */
+    override val contentActivitySignalClasses: List<String> = listOf(
         "com.bbk.appstore.widget.tabview.TouchViewPager",
         "com.bbk.appstore.widget.recyclerview.PullRefreshRecyclerView",
         "com.bbk.appstore.widget.CanDisableViewPager",
         "com.bbk.appstore.widget.DetectPageSelectViewPager",
         "com.bbk.appstore.ui.rank.RankingContainerView",
         "com.vivo.springkit.nestedScroll.NestedScrollLayout",
-        "com.airbnb.lottie.LottieAnimationView",
     )
-
-    /** 内容重绘信号接收端（onSessionCreated 注入，指向当前会话的 requestTick）。 */
-    @Volatile
-    private var contentInvalidatedListener: (() -> Unit)? = null
-
-    /** 成功 hook 的信号类数（0 = 无信号源，事件驱动回退每帧渲染）。 */
-    @Volatile
-    private var contentSignalHooked = 0
-
-    /** 各信号源触发计数（取证：静止时持续增长 = 信号源过触发）。 */
-    private val contentSignalCounts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     // 结构化兜底现直接 hook 平台 View.setPadding（见 hookListPaddingStructural v2 注释），
     // 安装不再有条件分支，无需装配后的视图树反查重试。
@@ -140,12 +132,6 @@ object AppStoreAdapter : AppAdapter {
         hookTouchFlow(facade, loader)
         hookGestureChain(facade, loader)
         hookNavigationBarPresentation(facade, config, loader)
-        contentSignalHooked = if (config().eventDrivenTick) {
-            AppAdapter.hookContentDrawSignals(facade, loader, contentSignalClasses) { name ->
-                contentSignalCounts.merge(name, 1L, Long::plus)
-                contentInvalidatedListener?.invoke()
-            }
-        } else 0
     }
 
     override fun onTabActivityResumed(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {
@@ -162,17 +148,8 @@ object AppStoreAdapter : AppAdapter {
         session.afterForward = {
             handler.post { if (!activity.isFinishing && !activity.isDestroyed) runDiagnostics(activity, facade) }
         }
-        // 事件驱动 tick：玻璃仅在内容真正重绘时刷新（静止零重绘）；零信号源（应用更新
-        // 类名失配等）自动回退每帧渲染，玻璃不会停更
-        contentInvalidatedListener = { session.requestTick() }
-        session.tickEventDriven = config().eventDrivenTick && contentSignalHooked > 0
-        // 信号计数取证（事件驱动 tick 排查：静止页面计数持续增长 = 信号源过触发）
-        for (delay in longArrayOf(10_000, 20_000, 30_000)) {
-            handler.postDelayed({
-                val counts = contentSignalCounts.entries.joinToString { "${it.key.substringAfterLast('.')}=${it.value}" }
-                facade.log(android.util.Log.INFO, "content signal counts: $counts")
-            }, delay)
-        }
+        // 静止降帧由 TargetHook 会话创建期统一接线（引擎单管线，本适配器零设置）；
+        // 旧事件驱动 tick 通道已退役并入该管线（活动窗口满帧率 + 静止 30fps/1Hz 深度静止）
         // 取证：装配后定时 dump（覆盖 tab 切换后的视图状态）
         for (delay in longArrayOf(3_000, 8_000, 15_000, 25_000, 40_000)) {
             handler.postDelayed({

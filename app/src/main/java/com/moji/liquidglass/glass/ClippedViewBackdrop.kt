@@ -230,7 +230,9 @@ class ClippedViewBackdrop(
             if (liveContent != null) {
                 canvas.drawRenderNode(liveContent)
             } else {
-                view.draw(canvas)
+                // 玻璃发起的宿主树直绘：期间被 hook 类的 onDraw 是绘制副作用，
+                // 抑制信号广播（自激防护，见 GlassSession.signalSuppressed）
+                GlassSession.withSignalSuppression { view.draw(canvas) }
             }
         } finally {
             node.endRecording()
@@ -354,7 +356,8 @@ class ClippedViewBackdrop(
             val viewPos = viewPosition()
             val glassPos = coordinates.positionInWindow()
             nc.translate(viewPos.x - glassPos.x, viewPos.y - glassPos.y)
-            view.draw(nc)
+            // 玻璃发起的宿主树直绘：信号抑制（自激防护，同 recordBand）
+            GlassSession.withSignalSuppression { view.draw(nc) }
         } finally {
             nc.restoreToCount(saveCount)
         }

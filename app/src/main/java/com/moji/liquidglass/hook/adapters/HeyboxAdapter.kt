@@ -142,17 +142,12 @@ object HeyboxAdapter : AppAdapter {
      *  取证）——返回 StateListDrawable{state_checked: lottie, default: 静态 PNG}。 */
     private const val DRAWABLE_WRAP_METHOD = "d4"
 
-    /** 内容活动信号源（静止降帧两档的活动源，AppAdapter.hookContentDrawSignals 沿类
-     *  层次找 onDraw 声明点）：RecyclerView（各页列表滚动/翻页，ViewPager2 内核同族
-     *  覆盖）+ LottieAnimationView（banner/加载动画持续重绘）+ CompoundButton（底栏
-     *  lottie 图标选中重播窗口——条目失效重绘即升档，预览翻转/点击切页同覆盖）。
-     *  平台/库类名混淆免疫；信号只升档不门控绘制，静止 30fps 低频档兜底一切未覆盖
-     *  的变化（角标/换肤 ≤33ms 自愈）。 */
-    private val CONTENT_ACTIVITY_SIGNAL_CLASSES = listOf(
-        "androidx.recyclerview.widget.RecyclerView",
-        "com.airbnb.lottie.LottieAnimationView",
-        "android.widget.CompoundButton",
-    )
+    /** 内容活动信号源说明（2026-11-04 起并入引擎单管线）：本应用此前自接的
+     *  RecyclerView/LottieAnimationView/CompoundButton 三类均在引擎默认列表内
+     *  （AppAdapter.DEFAULT_CONTENT_SIGNAL_CLASSES，hook/分发/降帧统一），适配器
+     *  侧不再自接 hook——冻结检测经 session.onContentActivity 挂接（见
+     *  onContentActivitySignal）。信号只升档不门控绘制，静止 30fps 低频档兜底一切
+     *  未覆盖的变化（角标/换肤 ≤33ms 自愈）。 */
 
     // —— 采样冻结（滑动期零外部 draw，上滑卡顿修复） ——
     // 上滑时列表新绑定的条目恰好落在屏幕底部的玻璃采样条带内，逐帧外部 view.draw
@@ -169,13 +164,14 @@ object HeyboxAdapter : AppAdapter {
      *  onDraw、门控在 draw 相，均主线程）。 */
     private val freezeGateState = LongArray(2)
 
-    /** 内容活动信号接收端（installAppHooks ⑤ 调用）：升活动窗口 + 更新持续检测。 */
+    /** 内容活动信号接收端（onSessionCreated 经 session.onContentActivity 挂接）：更新
+     *  冻结持续检测。满帧率窗口（armActivityWindow）由引擎信号管线统一升档，此处
+     *  不再重复调（单管线，防多通道叠加）。 */
     private fun onContentActivitySignal() {
         val now = android.os.SystemClock.elapsedRealtime()
         val st = freezeGateState
         if (st[0] == 0L || now - st[0] > FREEZE_GAP_MS) st[1] = now
         st[0] = now
-        activeSessionRef?.get()?.armActivityWindow()
     }
 
     /** 采样冻结门控（draw 相逐 tick 调用，闭包内自缓存零遍历）。 */
@@ -426,20 +422,9 @@ object HeyboxAdapter : AppAdapter {
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook setSystemUiVisibility failed", it)
         }
-        // ⑤ 内容活动信号（静止降帧两档的活动源 + 滑动冻结的持续检测源，见
-        //    CONTENT_ACTIVITY_SIGNAL_CLASSES 与采样冻结注释）：信号期间 armActivityWindow
-        //    升满帧率档，静止回 30fps 低频档（GlassRoot 两档驱动）。onDraw 只在视图真实
-        //    失效重绘时触发（滚动/动画期），干净子树的条带重录制不触发——无信号风暴风险。
-        //    全链失效降级 = 恒静止档（滞后感增强，功能不受损），logcat hooked 安装行核对。
-        val signalHooked = AppAdapter.hookContentDrawSignals(
-            facade, loader, CONTENT_ACTIVITY_SIGNAL_CLASSES,
-        ) { _ ->
-            onContentActivitySignal()
-        }
-        facade.log(
-            android.util.Log.INFO,
-            "content activity signals hooked: $signalHooked/${CONTENT_ACTIVITY_SIGNAL_CLASSES.size}",
-        )
+        // ⑤ 内容活动信号：自接 hook 已退役并入引擎单管线（TargetHook 进程级安装默认
+        //    5 类，本应用此前自接的 3 类均在其中）；冻结持续检测经 onSessionCreated 挂
+        //    session.onContentActivity（见 onContentActivitySignal）。
     }
 
     override fun onSessionCreated(
@@ -470,14 +455,14 @@ object HeyboxAdapter : AppAdapter {
         // 玻璃栏抬升（真实导航栏 inset，会话级缓存）：窗口延伸后玻璃贴窗口底会压在
         // 小白条上，按 inset 抬到导航条顶（芒果TV/淘宝/支付宝同款）。
         GlassInstaller.navInsetProvider = { computeNavInsetLift(session, activity) }
-        // 静止降帧两档 + 高刷减半分频（引擎 idleDecayTickEnabled，活动源 = installAppHooks
-        // ⑤ 信号）：满帧率档的条带重录制与宿主自绘在同一帧预算内叠加，重内容页（游戏库）
-        // 滑动卡顿主因——活动窗口内满帧率（高刷屏按帧计数减半）、静止 30fps 低频（滞后
-        // ≤33ms 自愈）。分频由引擎按实测帧间隔自动判定（偶数帧 tick 零拍频）——勿在此
-        // 用 display.refreshRate 一次性采样自设 glassRenderIntervalNs：LTPO 动态刷新率
-        // 下读数随状态漂移（重进应用 120/90/60 各异），一次性判定跨会话不一致且非整数
-        // 比率必拍频（真机实证，"重进应用卡顿复发"根因）。
-        session.idleDecayTickEnabled = true
+        // 静止降帧两档 + 高刷减半分频：由 TargetHook 会话创建期统一接线（引擎单管线，
+        // 本适配器零旗标设置）。分频由引擎按实测帧间隔自动判定（偶数帧 tick 零拍频）
+        // ——勿在此用 display.refreshRate 一次性采样自设限帧：LTPO 动态刷新率下读数
+        // 随状态漂移（重进应用 120/90/60 各异），一次性判定跨会话不一致且非整数比率
+        // 必拍频（真机实证，"重进应用卡顿复发"根因）。
+        // 滑动冻结的持续检测源 = 引擎信号管线的会话级消费者（onContentActivity；
+        // armActivityWindow 由管线统一做，此处只更新冻结状态）
+        session.onContentActivity = { onContentActivitySignal() }
     }
 
     // —— 窗口延伸（№14.2 配方：flags + 同栈补位 + 玻璃栏抬升） ——

@@ -7,6 +7,7 @@ import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.moji.liquidglass.config.ModuleConfig
+import kotlinx.coroutines.channels.Channel
 
 /** 玻璃栏样式参数（模块设置页可调，经 GlassInstaller.glassStyle 下发到玻璃层）。 */
 data class GlassStyle(
@@ -156,14 +157,6 @@ class GlassSession(
     @Volatile
     var backdropLiveNodeSampling: Boolean = false
 
-    /** 玻璃特效渲染最小间隔（纳秒；0 = 每帧渲染，默认）。重内容页 GPU 预算紧张时
-     *  （如相册 GL 网格 + 三层 vibrancy/blur/lens 特效 @120Hz 会顶爆 8.3ms 帧预算，
-     *  触发刷新率调度 120↔60 摆动），适配器按配置设为 ~16ms 把特效重绘降到 60fps：
-     *  玻璃带折射/镜像/模糊 60fps（8dp 模糊下无感），帧循环其余工作仍每帧执行；
-     *  液泡拖拽/按压/手势高光/重现动画读各自动画状态独立失效，不受影响仍满帧率。 */
-    @Volatile
-    var glassRenderIntervalNs: Long = 0L
-
     /** 采样冻结门控（声明式通道，默认 null = 其余应用零影响）：适配器注入，返回 true
      *  时 backdrop 不对 appRoot 做逐帧外部 draw——**进入冻结时一次性录制**条带、冻结
      *  期间纯回放，离开后自动恢复实时采样。外部高频 view.draw 会打乱部分自绘渲染树的
@@ -184,25 +177,21 @@ class GlassSession(
     var backdropForceRecord: Boolean = false
 
     /** 回前台唤醒 backdrop：下一帧强制重录制采样条带一次（去重帧 = 多录一次；冻结帧 =
-     *  单次外部 draw 后继续纯回放）。 */
+     *  单次外部 draw 后继续纯回放）。深度静止睡眠中时一并唤醒帧循环（无信号源）
+     *  立即消费重录制。 */
     fun invalidateBackdrop() {
         if (!backdropForceRecord) {
             backdropForceRecord = true
             logger?.invoke("backdrop invalidate (re-record after resume)")
         }
+        wakeFrameLoop()
     }
 
-    /** tick 事件驱动（适配器按内容重绘信号打开，如相册 GLRootView.onDraw hook）：
-     *  true 时帧循环不再每帧无条件 tick——应用内容静止时零重绘（不烧 GPU、开发者
-     *  选项的 Surface/视图/硬件层更新不再闪烁），内容重绘信号经 [onContentInvalidated]
-     *  驱动；选中 tab 进入动画期间由帧循环自驱，保证动画全程可见。false = 每帧 tick
-     *  （默认；商店路径不变）。 */
+    /** 内容活动信号会话级消费者（可选，采样冻结检测等）：引擎唯一信号管线广播（hook
+     *  的 onDraw 信号）时调用，[armActivityWindow] 之外的第二消费者。玻璃发起的宿主
+     *  视图直绘期间不调用（信号抑制，防自激回路）。主线程调用。 */
     @Volatile
-    var tickEventDriven: Boolean = false
-
-    /** 内容重绘信号（[tickEventDriven] 时由 GlassRoot 注入）：应用内容真正重绘时调用，
-     *  刷新玻璃。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
-    var onContentInvalidated: (() -> Unit)? = null
+    var onContentActivity: (() -> Unit)? = null
 
     /** 拖动悬停预览激活中（引擎维护，适配器 hook 回调只读）。部分应用的条目选中翻转
      *  方法带**切页副作用**（微博 TabViewGroupV2.setChecked(true) 的选中变化监听器直接
@@ -213,76 +202,99 @@ class GlassSession(
     var isTabPreviewActive: Boolean = false
         private set
 
-    /** 请求一次玻璃重绘（事件驱动模式）：底栏自身内容变化（拖动预览/点击转发等）时
-     *  由交互点调用。经 glassRenderIntervalNs 门控限帧。主线程调用。 */
-    fun requestTick() {
-        onContentInvalidated?.invoke()
-    }
-
-    /** 选中 tab 的进入动画是否进行中（事件驱动模式下帧循环据此自驱 tick）。 */
+    /** 选中 tab 的进入动画是否进行中（帧循环据此自驱满帧率）。 */
     val tabAnimating: Boolean get() = animLottie != null
 
-    /** 静止降帧两档驱动 + 高刷减半分频（适配器声明，默认 false = 每帧 tick，既有应用
-     *  逐位不变 §0.4）：true 时帧循环按"活动窗口内满帧率、静止 30fps 低频"两档 tick，
-     *  且高刷屏（实测平均 >66Hz）玻璃满帧率档**按帧计数减半分频**（偶数帧 tick，任意
-     *  刷新率恒整数倍零拍频；120 帧窗口重估，LTPO 动态刷新率自动跟随）。
-     *  **前提 = 适配器已接内容活动信号**（内容重绘/交互 → [armActivityWindow]）——
-     *  静止档只有 30fps 采样，无信号的内容变化滞后 ≤33ms 由低频档自愈，持续无信号的
-     *  内容变化则持续滞后。适用 = 采样开销大的应用（重内容页/整条目镜像 + 逐帧
-     *  lottie 镜像）：满帧率采样在重页面上与宿主自绘叠加挤占帧预算 = 滑动卡顿，
-     *  两档化后静止开销降 ~90%、滚动期信号升档 + 分频减半保流畅。 */
+    /** 静止降帧两档驱动 + 高刷减半分频（TargetHook 会话创建期对所有会话统一开启，唯一
+     *  设置点；配置 `idleFrameSleep` 关闭时保持 false = 逐位不变旧行为每帧恒满档）：
+     *  true 时帧循环按"活动窗口内满帧率、静止 30fps 低频"两档 tick，且高刷屏（实测
+     *  平均 >66Hz）玻璃满帧率档**按帧计数减半分频**（偶数帧 tick，任意刷新率恒整数倍
+     *  零拍频；120 帧窗口重估，LTPO 动态刷新率自动跟随）。
+     *  **前提 = 已接内容活动信号**（内容重绘/交互 → [armActivityWindow]）——静止档
+     *  只有 30fps 采样，无信号的内容变化滞后 ≤33ms 由低频档自愈，持续无信号的内容
+     *  变化则持续滞后。适用 = 采样开销大的应用（重内容页/整条目镜像 + 逐帧 lottie
+     *  镜像）：满帧率采样在重页面上与宿主自绘叠加挤占帧预算 = 滑动卡顿，两档化后
+     *  静止开销降 ~90%、滚动期信号升档 + 分频减半保流畅。 */
     @Volatile
     var idleDecayTickEnabled: Boolean = false
 
-    // —— 相册的"静止降帧"档位：每帧渲染模式下，内容活动（GLRootView.onDraw）或底栏
-    //    交互（点击/预览/选中同步/样式变化）后的窗口期内满帧率；静止后降到
-    //    [STATIC_TICK_INTERVAL_MS]（30fps，GlassRoot 帧循环门控）。与旧事件驱动的本质
-    //    区别：静止档**仍以低频持续采样**，GL 合成空窗的空白帧最多停留 ~33ms 自愈，
-    //    不会冻帧；图标/光效动画在交互窗口的满帧率内完整转播 ———
+    /** 深度静止档帧循环睡眠（1Hz，与 [idleDecayTickEnabled] 同一设置点统一开启，默认
+     *  false = 逐位不变旧行为）：前提 = [idleDecayTickEnabled] 已开启（信号驱动会话，
+     *  **无信号源不得开启**）。true 时帧循环在"活动窗口（1s）结束 → 30fps 静止档维持
+     *  [deepIdleDelayMs]"后进入深度静止——退出 `withFrameNanos` 循环（停止订阅
+     *  Choreographer 帧，这是原实现静止时仍 60Hz 的根因：帧回调每颗 vsync 挂起、窗口
+     *  永不空闲、LTPO 无法降档），改由墙钟定时 + [frameLoopWake] 唤醒通道驱动，玻璃
+     *  以 [deepIdleTickIntervalNs]（默认 1s，即 LTPO 最低档 1Hz）心跳采样。任何活动
+     *  信号（[armActivityWindow]/[invalidateBackdrop]/选中动画）经唤醒通道立即回到
+     *  满帧率，无感知过渡。视频 TextureView 已在默认信号类内——播放期间信号逐帧
+     *  续期、永不降档。 */
+    @Volatile
+    var idleFrameSleepEnabled: Boolean = false
+
+    /** 深度静止档进入延迟（毫秒）：30fps 静止档持续此时长后进入 1Hz 睡眠。两级衰减
+     *  设计——短停顿期间玻璃仍 30fps 跟得上无信号的内容变化，只有真正长静止才付 1Hz
+     *  滞后代价。默认 2s：总时长 = 活动窗口 1s + 2s = 最后活动后 ~3s 进入 1Hz。 */
+    @Volatile
+    var deepIdleDelayMs: Long = 2_000L
+
+    /** 深度静止档玻璃采样心跳间隔（纳秒，默认 1s = 1Hz）：显示管线对 1Hz 内容更新
+     *  可降到面板最低档（LTPO 1Hz），对齐原生静止页面功耗。 */
+    @Volatile
+    var deepIdleTickIntervalNs: Long = 1_000_000_000L
+
+    /** 深度静止档唤醒通道（CONFLATED，主线程专用）：睡眠中的帧循环挂起在 receive 上，
+     *  墙钟超时（1Hz 心跳）或 [wakeFrameLoop]（活动信号）任一到达即返回。发送永不
+     *  挂起、覆盖旧值，睡眠/泵帧两态下调用均无害。 */
+    internal val frameLoopWake = Channel<Unit>(Channel.CONFLATED)
+
+    /** 唤醒深度静止睡眠中的帧循环（主线程调用；非睡眠态下为一次通道写，无副作用）。 */
+    fun wakeFrameLoop() {
+        frameLoopWake.trySend(Unit)
+    }
+
+    // —— 相册的"静止降帧"档位（现引擎统一档位）：内容活动（GLRootView.onDraw 等
+    //    信号）或底栏交互后的窗口期内满帧率；静止后降到 30fps（GlassRoot 帧循环门控）。
+    //    静止档**仍以低频持续采样**，GL 合成空窗的空白帧最多停留 ~33ms 自愈，不会
+    //    冻帧；图标/光效动画在交互窗口的满帧率内完整转播 ———
     @Volatile
     private var activeUntilMs = 0L
 
-    /** 内容/交互活动窗口（满帧率档）：GLRootView.onDraw 信号与各交互点调用。主线程调用。 */
+    /** 内容/交互活动窗口（满帧率档）：内容活动信号管线（单一汇入口）与各交互点调用。
+     *  主线程调用。深度静止睡眠中时经 [wakeFrameLoop] 立即唤醒回满帧率（睡眠/泵帧
+     *  两态下调用均无害）。
+     *  **自激防护**：玻璃发起的宿主视图直绘（[withSignalSuppression] 置位期间）产生的
+     *  onDraw 信号是绘制副作用而非内容活动，直接吞掉——镜像 Painter 每 tick 单参
+     *  `view.draw` 直绘被 hook 类（ImageView/CompoundButton 条目），不吞则静止档首个
+     *  tick 即被拉回满帧（深度静止永不进入，真机"静止稳定 60Hz"根因）。 */
     fun armActivityWindow(durationMs: Long = 1_000L) {
+        if (signalSuppressed) return
         activeUntilMs = android.os.SystemClock.elapsedRealtime() + durationMs
+        wakeFrameLoop()
     }
 
     /** 满帧率档是否生效（false = 静止，帧循环按 30fps 低频 tick）。 */
     val contentActive: Boolean
         get() = android.os.SystemClock.elapsedRealtime() < activeUntilMs
 
-    // —— 静态空闲让步（v1.8，事件驱动会话）：帧循环常驻会使宿主主线程消息队列整场
-    //    不空闲，宿主挂在 MessageQueue.IdleHandler 上的任务被无限期饿死（小红书切页
-    //    oec.f.S0 滞留实证，引擎级已知限制）。内容完全静止时周期性暂停 tick 一个短窗，
-    //    让队列出现真正的空闲间隙冲刷积压任务。静止期玻璃无内容变化，让步零视觉代价；
-    //    任何内容重绘信号/动画/交互活动窗口都会立即终止让步。每帧 tick 模式（无内容
-    //    信号，静止不可判定）不启用，其 IdleHandler 依赖由适配器侧同步重放解决。——
-    @Volatile
-    private var lastIdleYieldMs = 0L
-    @Volatile
-    private var idleYieldUntilMs = 0L
+    companion object {
+        /** 玻璃发起的宿主视图绘制进行中（主线程标志）：镜像 Painter 单参直绘 + backdrop
+         *  采样重录期间置位。期间 hook 到的 onDraw 信号（ImageView/CompoundButton 等
+         *  声明点）是**绘制副作用**而非内容活动——真内容信号在宿主自身 traversal 栈
+         *  触发，与玻璃 draw 相主线程串行不重叠，不会误吞。 */
+        @Volatile
+        var signalSuppressed: Boolean = false
 
-    /**
-     * 静止空闲让步窗口判定（仅 [tickEventDriven] 会话）。帧循环每帧调用（主线程），
-     * [nowMs] 为帧时钟毫秒（与调用方同源即可，内部不做跨时钟比较）。
-     *
-     * @param contentDirty 本帧内容重绘脏标记（GlassRoot 持有）
-     * @return true = 本帧跳过 tick（让步窗口生效中）
-     */
-    fun shouldIdleYield(nowMs: Long, contentDirty: Boolean): Boolean {
-        if (!tickEventDriven) return false
-        if (contentDirty || tabAnimating || contentActive) {
-            idleYieldUntilMs = 0L
-            return false
+        /** 玻璃直绘区段包装：置位抑制标志执行 [block]，结束恢复（支持嵌套，按前置值
+         *  恢复）。 */
+        inline fun <T> withSignalSuppression(block: () -> T): T {
+            val prev = signalSuppressed
+            signalSuppressed = true
+            return try {
+                block()
+            } finally {
+                signalSuppressed = prev
+            }
         }
-        if (nowMs < idleYieldUntilMs) return true
-        if (nowMs - lastIdleYieldMs >= IDLE_YIELD_PERIOD_MS) {
-            lastIdleYieldMs = nowMs
-            idleYieldUntilMs = nowMs + IDLE_YIELD_WINDOW_MS
-            logger?.invoke("idle yield window ${IDLE_YIELD_WINDOW_MS}ms (flush host IdleHandlers)")
-            return true
-        }
-        return false
     }
 
     /** WHOLE_TAB 图标帧预览钩子：返回指定 tab 的"选中动画 Lottie drawable"（任意对象，
@@ -444,6 +456,9 @@ class GlassSession(
      * 上一个选中 tab 复位到基础帧。主线程调用。
      */
     fun beginTabAnimation(index: Int) {
+        // 深度静止档唤醒：LOTTIE_RESOLVE（商店）选中动画走 animLottie 自驱（fullRate 含
+        // tabAnimating），非 LOTTIE 系由下方 armActivityWindow 唤醒——动画开始即回满帧率
+        wakeFrameLoop()
         // WHOLE_TAB 系（相册/微博）：选中变化（玻璃侧点击与应用侧同步都经此入口）伴随
         // 图标动画，开满帧率窗口让镜像逐帧跟随
         if (extractor.descriptor.iconMode != IconMode.LOTTIE_RESOLVE) armActivityWindow()
@@ -773,7 +788,3 @@ class GlassSession(
         }
     }
 }
-
-/** 静态空闲让步的触发周期（静止持续多久让步一次）与窗口时长（GlassSession.shouldIdleYield）。 */
-private const val IDLE_YIELD_PERIOD_MS = 10_000L
-private const val IDLE_YIELD_WINDOW_MS = 120L

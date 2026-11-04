@@ -33,6 +33,11 @@ object TargetHook {
     private val scheduled = HashMap<Activity, Int>() // 已调度重试轮次（防止 onResume 重复排程）
     private val giveUpLogged = HashSet<Int>() // identityHashCode，仅记录一次放弃日志
 
+    /** 中央默认内容活动信号实命中类数（installAppHooks 期记录）：>0 才允许会话开启
+     *  静止降帧两档 + 深度静止档（无信号源会话开启 = 静止档跟不上内容变化，玻璃
+     *  恒滞后；平台类恒可解析，实际恒 ≥3，防御性判空）。 */
+    private var centralSignalHooked = 0
+
     /** 进程级注入计数/指纹（System 属性跨 classloader 共享——温复用旧进程里新旧两套
      *  模块 dex 各有各的静态区，唯有 System 属性能对账）。 */
     private const val PROP_INSTALL_COUNT = "moji.liquidglass.install.count"
@@ -107,10 +112,19 @@ object TargetHook {
         // （installAppHooks 装的是进程级全局方法 hook，与 Activity 生命周期无关，不能等
         // resume 才还原）。运行时切换由 ConfigCheckedFacade 在回调层惰性直通兜底。
         val hooksActive = config().enabled && config().appEnabledFor(hostPackage)
+        val checkedFacade = ConfigCheckedFacade(facade, config, hostPackage)
         adapter.installAppHooks(
-            ConfigCheckedFacade(facade, config, hostPackage),
+            checkedFacade,
             config,
             appClassLoader,
+        )
+        // 内容活动信号单管线（进程级一次性）：默认 5 类 + 适配器声明的应用专属类，
+        // 经 ConfigCheckedFacade 保证开关关闭时回调直通。适配器勿自接信号 hook
+        // （多管线叠加是架构红线，自接代码已全部迁移进本管线）
+        centralSignalHooked = AppAdapter.hookContentActivitySignals(
+            checkedFacade,
+            appClassLoader,
+            adapter.contentActivitySignalClasses,
         )
         facade.log(
             android.util.Log.INFO,
@@ -287,6 +301,16 @@ object TargetHook {
             session.logger = { msg -> facade.log(android.util.Log.INFO, msg) }
             setupNavBarInsetProvider(session)
             adapter.onSessionCreated(session, activity, facade, config)
+            // 静止降帧统一接线（唯一设置点，全部会话）：两档 + 深度静止档（活动窗口 1s
+            // → 30fps 静止档 3s → 1Hz 帧循环睡眠，LTPO 降面板最低档对齐原生功耗）。
+            // 信号源 = 单管线广播（默认类 + 适配器声明类）。idleFrameSleep 配置远程
+            // 可关（视觉异常回退逐位不变旧行为每帧恒满档）。
+            if (config().idleFrameSleep && centralSignalHooked > 0) {
+                session.idleDecayTickEnabled = true
+                session.idleFrameSleepEnabled = true
+                session.logger?.invoke("idle decay + deep idle (1Hz frame sleep) enabled")
+            }
+            AppAdapter.registerActivitySignalSession(session)
             logTargetVersion(activity, adapter, facade)
             GlassInstaller.glassStyle = GlassStyle.fromConfig(config())
             sessions[activity] = session

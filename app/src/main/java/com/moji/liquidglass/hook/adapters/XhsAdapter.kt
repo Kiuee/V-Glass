@@ -111,9 +111,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   自管，不在延迟体）。v1.8 玻璃点击经切页入口全管线派发，入口 after
  *   hook 同步重放延迟体（含懒加载激活），随后自增序号字段（9.52.1 B / 9.50.0 G）；滞留
  *   延迟体在空闲冲刷时的幂等跳过由 v2.4 延迟体吞咽 hook 按序号陈旧性自行强制（应用守卫
- *   第二条件依赖商城 tab 开关配置位、不可依赖，见 installAppHooks ③）。引擎侧配套"静态
- *   空闲让步窗口"（GlassSession
- *   shouldIdleYield）冲刷其他未知的 idle 挂载任务。
+ *   第二条件依赖商城 tab 开关配置位、不可依赖，见 installAppHooks ③）。引擎侧静止降帧
+ *   深度静止睡眠（1Hz）期主队列天然空闲，其他未知的 idle 挂载任务可正常冲刷。
  *
  * - **冷启动 count 窗口（v1.9 挂起 → v2.0 自增长 → v2.5 装配后预增长）**：外层 pager 的
  *   IndexPagerAdapterV2 冷启动 count=1（public int r，getCount() 直返），增长任务由

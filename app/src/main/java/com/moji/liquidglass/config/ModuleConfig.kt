@@ -39,16 +39,12 @@ data class ModuleConfig(
     /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
      *  商店等默认路径不受影响。视觉异常时可远程配置改为 false 关闭。 */
     val lightweightSampling: Boolean = true,
-    /** 玻璃特效渲染帧率上限（Hz，0 = 不限，默认）：仅适配器按需读取。实测不可用——
-     *  60Hz 特效叠加在 120fps 滚动内容上产生拍频，整页观感比 120↔60 摆动更差
-     *  （2025-10 真机结论），仅作实验旋钮保留。GPU 负载的正解方向见维护手册
-     *  "玻璃特效渲染限帧"条目。 */
-    val glassRenderCapHz: Int = 0,
-    /** tick 事件驱动（默认开）：玻璃仅在应用内容真正重绘时刷新，静止零重绘——
-     *  消除开发者选项 Surface/视图/硬件层更新的持续闪烁与空闲 GPU 烧灼。
-     *  需要适配器提供内容重绘信号（相册 = GLRootView.onDraw hook）；无信号源时
-     *  适配器不应启用，否则玻璃停更。 */
-    val eventDrivenTick: Boolean = true,
+    /** 静止降帧 + 深度静止档（默认开）：中央为全部适配器会话开启信号驱动的两档
+     *  （活动窗口 1s → 30fps 静止档 3s → 1Hz 帧循环睡眠）——退出 withFrameNanos
+     *  常驻订阅（静止 60Hz 不降的根因），显示管线降到面板最低档（LTPO 1Hz）对齐
+     *  原生功耗。视频 TextureView 在默认信号类内，播放期间永不降档。视觉异常时
+     *  远程配置关闭，回退逐位不变旧行为（每帧恒满档兜底）。 */
+    val idleFrameSleep: Boolean = true,
     /** 按应用启用开关（包名 → 是否启用）：总开关开启的前提下逐应用生效；
      *  未单独配置的应用默认启用。关闭后重启对应应用还原。 */
     val appEnabled: Map<String, Boolean> = emptyMap(),
@@ -68,8 +64,7 @@ data class ModuleConfig(
         root.put("barRefractionScale", barRefractionScale.toDouble())
         root.put("barShowLabels", barShowLabels)
         root.put("lightweightSampling", lightweightSampling)
-        root.put("glassRenderCapHz", glassRenderCapHz)
-        root.put("eventDrivenTick", eventDrivenTick)
+        root.put("idleFrameSleep", idleFrameSleep)
         if (appEnabled.isNotEmpty()) {
             val apps = JSONObject()
             for ((pkg, on) in appEnabled) apps.put(pkg, on)
@@ -106,8 +101,7 @@ data class ModuleConfig(
                     barRefractionScale = root.optDouble("barRefractionScale", 1.0).toFloat(),
                     barShowLabels = root.optBoolean("barShowLabels", true),
                     lightweightSampling = root.optBoolean("lightweightSampling", true),
-                    glassRenderCapHz = root.optInt("glassRenderCapHz", 0),
-                    eventDrivenTick = root.optBoolean("eventDrivenTick", true),
+                    idleFrameSleep = root.optBoolean("idleFrameSleep", true),
                     appEnabled = root.optJSONObject("appEnabled")?.let { apps ->
                         buildMap {
                             for (key in apps.keys()) put(key, apps.optBoolean(key, true))

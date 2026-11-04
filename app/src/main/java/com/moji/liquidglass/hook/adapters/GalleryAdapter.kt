@@ -46,9 +46,17 @@ object GalleryAdapter : AppAdapter {
     private const val PHOTO_PAGE_CLASS = "com.android.gallery3d.app.PhotoPage"
     // 多选模式管理器（公开 data_api 类，非混淆）：网格/相册集等页面共用
     private const val SELECTION_MANAGER_CLASS = "com.vivo.data_api.manager.c"
-    // 照片网格 GL 渲染根视图：onDraw 仅作"内容在动"的活动信号（升满帧率档），
-    // 不作绘制门控（事件驱动的教训见 installAppHooks 注释）
+    // 照片网格 GL 渲染根视图：onDraw 仅作"内容在动"的活动信号（升满帧率档，引擎
+    // 单管线广播），不作绘制门控（GL 空窗/动画不可靠的教训见 onSessionCreated 注释）
     private const val GL_ROOT_VIEW_CLASS = "com.android.gallery3d.ui.GLRootView"
+
+    /**
+     * 应用专属内容活动信号类（引擎单管线声明，hook/分发/降帧由引擎统一负责）：
+     * GLRootView.onDraw = GL 渲染帧（页面切换/滑动/内容变化时触发，静止不触发）。
+     * 本应用此前手写 facade.around hook 已退役并入单管线（walk-up 落 GLRootView 自身
+     * 的 onDraw 声明点，行为等价）。
+     */
+    override val contentActivitySignalClasses: List<String> = listOf(GL_ROOT_VIEW_CLASS)
 
     private fun isNavItem(v: View): Boolean =
         v.javaClass.name == ITEM_CLASS || v.javaClass.simpleName == "VNavMenuItem"
@@ -83,10 +91,6 @@ object GalleryAdapter : AppAdapter {
     private val selectionManagers = WeakHashMap<Any, Boolean>()
     private var selectionPollAt = 0L
     private var selectionInSelectionMode: java.lang.reflect.Method? = null
-
-    /** 内容活动信号接收端（onSessionCreated 注入 → session.armActivityWindow）。 */
-    @Volatile
-    private var contentSignalListener: (() -> Unit)? = null
 
     /** 是否有页面处于多选模式（500ms 节流复核：应用绕过 leave 的退出路径也能自愈）。 */
     private fun selectionModeActive(): Boolean {
@@ -158,22 +162,11 @@ object GalleryAdapter : AppAdapter {
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook SelectionManager selection-mode tracking failed", it)
         }
-        // 事件驱动 tick：相册**刻意停用**（tickEventDriven 写死 false，见 onSessionCreated）。
-        // GL 内容无法可靠转为重绘信号：页面切换过渡期首批 onDraw 是合成前的空白帧
-        // （玻璃采样空白冻成"透明"）、图标动画与光效动画不触发 GLRootView.onDraw
-        // （镜像静止/闪烁）。改为"静止降帧"方案（效果优先 + 控耗电）：
-        // GLRootView.onDraw 只作**活动信号**（升满帧率档），不作绘制门控——静止后玻璃
-        // 仍以 30fps 低频采样，空白帧最多停留 ~33ms 自愈，不会重蹈事件驱动的冻帧。
-        runCatching {
-            val glRoot = Class.forName(GL_ROOT_VIEW_CLASS, true, loader)
-            facade.around(glRoot.getDeclaredMethod("onDraw", android.graphics.Canvas::class.java), null) { _ ->
-                contentSignalListener?.invoke()
-                null
-            }
-            facade.log(android.util.Log.INFO, "hooked GLRootView.onDraw as content activity signal")
-        }.onFailure {
-            facade.log(android.util.Log.WARN, "hook GLRootView.onDraw failed (static 30fps tier always)", it)
-        }
+        // 内容活动信号：GLRootView.onDraw 经引擎单管线接线（contentActivitySignalClasses
+        // 声明，TargetHook 进程级安装）——GLRootView.onDraw 只作**活动信号**（升满帧率
+        // 档），不作绘制门控：GL 内容无法可靠转为重绘信号（页面切换过渡期首批 onDraw
+        // 是合成前空白帧、图标/光效动画不触发 GLRootView.onDraw），静止后玻璃仍以 30fps
+        // 低频采样，空白帧最多停留 ~33ms 自愈。手写 hook 已退役（2026-11-04 单管线收敛）。
     }
 
     override fun onSessionCreated(
@@ -195,14 +188,9 @@ object GalleryAdapter : AppAdapter {
         // 已录制的 RenderNode：条带只在几何变化时重录，其余帧纯回放，内容仍是当帧实时
         // （无降频滞后）；隐藏 API 取不到时引擎自动回退 view.draw（不崩溃）。
         session.backdropLiveNodeSampling = true
-        // 事件驱动写死停用（GL 合成空窗/图标动画/光效三类效果问题，见 installAppHooks 注释）；
-        // onDraw 信号仅用于升满帧率档（静止降帧方案），不门控绘制
-        session.tickEventDriven = false
-        contentSignalListener = { session.armActivityWindow() }
-        // 玻璃特效渲染限帧（实验旋钮，默认 0=不限）：60Hz 实测产生拍频已废弃默认启用，
-        // 仅留作 A/B 实验；与事件驱动叠加时会节流内容信号，慎用
-        session.glassRenderIntervalNs = config().glassRenderCapHz
-            .takeIf { it > 0 }?.let { 1_000_000_000L / it } ?: 0L
+        // 静止降帧由 TargetHook 会话创建期统一接线（引擎单管线）；GLRootView.onDraw
+        // 信号仅用于升满帧率档（GL 合成空窗/图标动画/光效不触发 GL 绘制，不门控绘制
+        // ——GL 空窗的空白帧由静止档低频采样自愈）。旧事件驱动通道已退役。
         // 拖离原选中 tab 的反选还原 = 应用自身 i(item) 原生语义（jadx 10.1.6.4 实证：
         // setChecked(false) + 停动画 + 按状态表换回未选中图）。setChecked 不换图标——
         // 选中观感由 bar 经 setItemSelected 挂选中 lottie@1f，仅 setChecked 时拖离后

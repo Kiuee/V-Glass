@@ -70,6 +70,16 @@ interface AppAdapter {
     /** 一次性安装应用专属 hooks（内容延伸等；无差异需求时空实现）。 */
     fun installAppHooks(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader) {}
 
+    /**
+     * 应用专属内容活动信号类（可选声明，默认空）：静止降帧两档 + 深度静止档的唯一
+     * 信号管线（TargetHook 进程级一次性 hook [AppAdapter.DEFAULT_CONTENT_SIGNAL_CLASSES]
+     * + 本列表）之外的补充信号源。**适配器只声明类名，hook 安装/分发/降帧档位全部
+     * 由引擎单管线负责**（勿再自接 hookContentDrawSignals / 自设降帧旗标——多管线
+     * 叠加是架构红线）。走 AppAdapter.hookContentDrawSignals 的同一 walk-up 落点
+     * 语义（沿类层次找 onDraw 声明点），应用不存在某类时自动跳过。
+     */
+    val contentActivitySignalClasses: List<String> get() = emptyList()
+
     /** 主 Tab Activity onResume（导航栏呈现等每次恢复期重设的行为）。 */
     fun onTabActivityResumed(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {}
 
@@ -83,6 +93,79 @@ interface AppAdapter {
     }
 
     companion object {
+        // —— 内容活动信号单管线（静止降帧两档 + 深度静止档的唯一活动源）——
+        // TargetHook 进程级一次性 hook（默认类 + 适配器 [AppAdapter.contentActivitySignalClasses]
+        // 声明）→ 单一分发口广播 → 各会话 armActivityWindow + onContentActivity 消费者。
+        // 适配器勿自接信号 hook / 自设降帧旗标（多管线叠加是架构红线）。
+        /**
+         * 跨应用默认内容活动信号类：RecyclerView（列表滚动/翻页/条目重绑定）+
+         * LottieAnimationView（banner/加载/图标动画持续重绘）+ TextureView（视频逐帧
+         * 输出——feed 视频实时跟随的关键信号源，播放期间信号逐帧续期永不降档）+
+         * WebView（H5 页面自绘帧）+ CompoundButton（选中/勾选状态重绘）。平台类混淆
+         * 免疫，应用不存在某类（无 androidx/无 lottie）时自动跳过按实命中计。
+         * walk-up 落点事实：LottieAnimationView 不声明 onDraw（继承链无 onDraw）→
+         * 落 **ImageView.onDraw**，hook 覆盖全进程 ImageView。
+         * 玻璃 ComposeView 挂 decor content、不在任何被 hook 类子树内——玻璃自身重绘
+         * 不触发信号；镜像 Painter 对宿主视图的**单参直绘**会触发（自激回路），由
+         * GlassSession.signalSuppressed 抑制（见 withSignalSuppression）。
+         * ViewRootImpl.performTraversals 全局信号不可用的根因 = 玻璃层自身 tick 触发
+         * traversal 会自持满帧。
+         */
+        val DEFAULT_CONTENT_SIGNAL_CLASSES = listOf(
+            "androidx.recyclerview.widget.RecyclerView",
+            "com.airbnb.lottie.LottieAnimationView",
+            "android.view.TextureView",
+            "android.webkit.WebView",
+            "android.widget.CompoundButton",
+        )
+
+        private val signalSessions = ArrayList<java.lang.ref.WeakReference<GlassSession>>()
+        @Volatile private var signalsHooked = false
+
+        /** 注册会话到信号广播表（TargetHook 装配成功后调用；弱引用 + 注册时惰性清理，
+         *  restore 后未及 GC 的会话收到广播无害——帧循环已断仅字段写入）。 */
+        fun registerActivitySignalSession(session: GlassSession) {
+            synchronized(signalSessions) {
+                signalSessions.removeAll { it.get() == null }
+                signalSessions.add(java.lang.ref.WeakReference(session))
+            }
+        }
+
+        /** 内容活动信号广播（hook 回调，主线程，唯一分发口）：升所有注册会话的满帧率
+         *  窗口 + 通知会话级消费者（onContentActivity，采样冻结检测等）。玻璃发起的
+         *  宿主直绘期间整体抑制（自激防护）。 */
+        private fun dispatchContentActivitySignal() {
+            if (GlassSession.signalSuppressed) return
+            synchronized(signalSessions) {
+                for (ref in signalSessions) ref.get()?.let {
+                    it.armActivityWindow()
+                    it.onContentActivity?.invoke()
+                }
+            }
+        }
+
+        /**
+         * 内容活动信号接线（进程级一次性，TargetHook installAppHooks 期调用；facade 用
+         * ConfigCheckedFacade 包装保证开关关闭时回调直通）：默认类 + [extraClasses]
+         * （适配器 [AppAdapter.contentActivitySignalClasses] 声明）一次 hook。返回实命中
+         * 的信号类数——0 = 无可用信号源，调用方不得开启静止降帧（玻璃跟不上内容变化）。
+         * 平台类（TextureView/WebView/CompoundButton）恒可解析，实际恒 ≥3。
+         */
+        fun hookContentActivitySignals(facade: HookFacade, loader: ClassLoader, extraClasses: List<String>): Int {
+            val classNames = DEFAULT_CONTENT_SIGNAL_CLASSES + extraClasses
+            if (signalsHooked) return classNames.size
+            signalsHooked = true
+            val hooked = hookContentDrawSignals(facade, loader, classNames) { _ ->
+                dispatchContentActivitySignal()
+            }
+            facade.log(
+                android.util.Log.INFO,
+                "content activity signals hooked: $hooked/${classNames.size}" +
+                    (if (extraClasses.isNotEmpty()) " (default ${DEFAULT_CONTENT_SIGNAL_CLASSES.size} + app ${extraClasses.size})" else ""),
+            )
+            return hooked
+        }
+
         /**
          * 导航栏透明化（小白条区域呈现，参照 LiquidTab 的导航栏沉浸）：
          * 导航栏透明 + 关闭系统对比度蒙层，信息流在小白条区域原色透出。
@@ -102,15 +185,19 @@ interface AppAdapter {
         }
 
         /**
-         * hook 内容重绘信号源（事件驱动 tick，见 `GlassSession.tickEventDriven`）：
-         * 这些类的 `onDraw` = 应用内容真正重绘的时刻（滚动/动画期间每帧触发、静止时
-         * 不触发），先于玻璃绘制、同一 traversal 内生效——静止零重绘且满帧率无拍频。
+         * hook 内容活动信号源（静止降帧唯一管线，TargetHook 经
+         * [hookContentActivitySignals] 调用）：这些类的 `onDraw` = 应用内容真正重绘的
+         * 时刻（滚动/动画期间每帧触发、静止时不触发）。
          *
          * 沿类层次向上找 `onDraw` 的声明点（子类未覆写时落在父类实现并对该父类全部
          * 实例生效，如内容容器继承 RecyclerView 时 hook 到 RecyclerView.onDraw）；
          * **绝不落在 `android.view.View` 的空实现**（那会拦截全进程所有视图，过热）。
          * 同一声明点只 hook 一次。返回成功覆盖的信号类数（0 = 无可用信号源，调用方
-         * 应禁用事件驱动 tick 回退每帧渲染，否则玻璃停更）。
+         * 不得开启静止降帧，否则玻璃跟不上内容变化）。
+         *
+         * **自激防护**：回调在 [GlassSession.signalSuppressed]（玻璃直绘宿主视图期间）
+         * 置位时跳过——镜像 Painter 每 tick 单参 `view.draw` 直绘被 hook 类产生的
+         * onDraw 是绘制副作用，不是内容活动。
          */
         fun hookContentDrawSignals(
             facade: HookFacade,
@@ -137,7 +224,10 @@ interface AppAdapter {
                 val method = target ?: continue
                 if (seenDeclarations.add(method.declaringClass)) {
                     runCatching {
-                        facade.around(method, null) { onSignal(className); null }
+                        facade.around(method, null) {
+                            if (!GlassSession.signalSuppressed) onSignal(className)
+                            null
+                        }
                     }.onFailure {
                         facade.log(android.util.Log.WARN, "hook content signal failed: $className", it)
                     }

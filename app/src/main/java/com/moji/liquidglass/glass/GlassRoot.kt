@@ -73,6 +73,7 @@ import com.moji.liquidglass.glass.components.LiquidBottomTab
 import com.moji.liquidglass.glass.components.LiquidBottomTabs
 import com.moji.liquidglass.glass.utils.InteractiveHighlight
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -109,9 +110,8 @@ fun GlassRoot(
 ) {
     val density = LocalDensity.current
     val tick = remember { mutableIntStateOf(0) }
-    // tick 门控时间戳与内容重绘脏标记（帧循环与内容重绘信号共用，主线程）
+    // tick 门控时间戳（帧循环低频档/深度静止档的间隔基准，主线程）
     val tickGate = remember { LongArray(1) }
-    val contentDirty = remember { booleanArrayOf(false) }
     val backdrop = remember(appRoot, session) {
         ClippedViewBackdrop(
             view = appRoot,
@@ -210,76 +210,115 @@ fun GlassRoot(
         // 帧间隔重估，LTPO 动态刷新率下自动跟随）
         var frameIndex = 0L
         var halfRateDivider = 1
+        // 深度静止档状态：最近满帧率时刻（两级衰减的静止计时起点，0 = 首迭代初始化），
+        // deepIdle = 当前迭代是否处于 1Hz 睡眠等待（上一迭代末决定，决定本迭代取帧方式）
+        var lastFullRateNs = 0L
+        var deepIdle = false
+        // 原生压制/补色低频重申的时间门（原 120 帧窗口帧计数驱动——深度静止档帧不
+        // 流动会饿死，改 2s 时间门控；活跃期与原频率同量级）
+        var lastReassertNs = 0L
         while (true) {
-            val now = withFrameNanos { it }
+            val wasSleeping = deepIdle
+            // 取帧方式两态：vsync 泵帧（withFrameNanos，每颗 vsync 醒一次）或深度静止
+            // 睡眠（墙钟定时 + 唤醒通道）。withFrameNanos 与 System.nanoTime 同源
+            // （帧时间 = vsync 到达时刻的 nanoTime），两态时间戳可直接比较。
+            val now: Long
+            if (wasSleeping) {
+                // 深度静止睡眠等待：**零 Choreographer 帧订阅**——原实现 while(true)
+                // { withFrameNanos } 是常驻 vsync 泵，静止档只降 tick 频率不降帧回调
+                // 订阅，窗口永不进入空闲态 → 显示管线恒按面板刷新率供帧（静止 60Hz
+                // 不降的根因）。睡眠协程挂起在 receive 上，定时器走协程 DefaultExecutor
+                // 后台线程墙钟（AndroidUiDispatcher 不覆写 Delay）、唤醒经
+                // AndroidUiDispatcher 的 Handler 蹦床分发到主线程——全程无 vsync 订阅，
+                // 显示管线对 1Hz 内容更新可降到面板最低档（LTPO 1Hz）。
+                // 超时返回 null → 本迭代执行 1Hz 心跳 tick（tickGate 距上次已满
+                // deepIdleTickIntervalNs）；收到唤醒 → 重算 fullRate，满帧即退出睡眠。
+                val waitMs = (tickGate[0] + session.deepIdleTickIntervalNs - System.nanoTime()) /
+                    1_000_000L
+                withTimeoutOrNull(waitMs.coerceAtLeast(0L)) { session.frameLoopWake.receive() }
+                now = System.nanoTime()
+            } else {
+                now = withFrameNanos { it }
+            }
             val gapNs = now - lastFrame
             lastFrame = now
             frameIndex++
-            frames++
-            sumNs += gapNs
-            if (gapNs > maxNs) maxNs = gapNs
-            if (frames >= 120) {
-                session.logger?.invoke(
-                    "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms " +
-                        "ticks=$ticks"
-                )
-                // 高刷减半分频判定（idleDecay 会话）：**实测平均帧间隔**而非
-                // display.refreshRate 一次性采样——LTPO 动态刷新率下后者随状态漂移
-                // （重进应用/页面切换时 120/90/60 读数各异，一次性判定失真且跨会话
-                // 不一致）；分频按**帧计数**（偶数帧 tick）不按 ns 时长——任意刷新率下
-                // 恒为整数倍、零拍频（ns 门控在非整数比率下必拍频，相册教训）
-                halfRateDivider = if (session.idleDecayTickEnabled &&
-                    sumNs > 0L && 1_000_000_000L / (sumNs / 120) > 66L
-                ) 2 else 1
-                frames = 0
-                sumNs = 0
-                maxNs = 0
-                ticks = 0
-                // 低频重申原生底栏的 clickable 压制（应用刷新可能重设监听/可点击）
+            // 帧指标只统计 vsync 泵帧（深度静止睡眠的 1Hz 心跳非 vsync 帧，计入会
+            // 污染 120 帧窗口均值与帧停滞告警——1s 心跳间隔是预期行为非主线程阻塞）
+            if (!wasSleeping) {
+                frames++
+                sumNs += gapNs
+                if (gapNs > maxNs) maxNs = gapNs
+                if (frames >= 120) {
+                    session.logger?.invoke(
+                        "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms " +
+                            "ticks=$ticks"
+                    )
+                    // 高刷减半分频判定（idleDecay 会话）：**实测平均帧间隔**而非
+                    // display.refreshRate 一次性采样——LTPO 动态刷新率下后者随状态漂移
+                    // （重进应用/页面切换时 120/90/60 读数各异，一次性判定失真且跨会话
+                    // 不一致）；分频按**帧计数**（偶数帧 tick）不按 ns 时长——任意刷新率下
+                    // 恒为整数倍、零拍频（ns 门控在非整数比率下必拍频，相册教训）
+                    halfRateDivider = if (session.idleDecayTickEnabled &&
+                        sumNs > 0L && 1_000_000_000L / (sumNs / 120) > 66L
+                    ) 2 else 1
+                    frames = 0
+                    sumNs = 0
+                    maxNs = 0
+                    ticks = 0
+                }
+                if (gapNs > 500_000_000) {
+                    session.logger?.invoke("frame stall ${gapNs / 1_000_000}ms (main thread or render pipeline blocked)")
+                }
+            }
+            // 原生压制重申 + 装配期缺色的延迟补取（应用刷新可能重设监听/可点击、晚于
+            // 装配才应用主题色）：原 120 帧窗口帧计数驱动，深度静止档帧不流动会饿死——
+            // 改 2s 时间门控（泵帧期与原频率同量级，睡眠期 1Hz 心跳同样触发）
+            if (now - lastReassertNs >= REASSERT_INTERVAL_NS) {
+                lastReassertNs = now
                 session.reassertClickSuppression()
-                // 装配期缺色的延迟补取（应用晚于装配才应用主题色的加载态自愈）
                 session.reextractColorsIfMissing(specColors.first, specColors.second)?.let {
                     specColors = it
                 }
             }
-            if (gapNs > 500_000_000) {
-                session.logger?.invoke("frame stall ${gapNs / 1_000_000}ms (main thread or render pipeline blocked)")
+            // tick 驱动（唯一通道）：内容活动信号（TargetHook 统一 hook → armActivityWindow）
+            // 与玻璃自驱（选中动画/交互）开满帧率窗口，窗口内每帧 tick（高刷按帧计数
+            // 减半分频），静止后降 30fps 低频 tick——低频档仍持续采样，合成空窗的空白帧
+            // 最多停留 ~33ms 自愈，省下大部分空闲开销。**无信号源不得开启两档**（静止档
+            // 跟不上无信号的内容变化）。`!idleDecayTickEnabled` 兜底项 = 未接线会话的
+            // 每帧恒满档（配置 idleFrameSleep 关闭 = 逐位不变旧行为）。
+            // 历史备注：事件驱动 tick 通道（脏标记同帧驱动）已退役并入本通道；
+            // 旧 fullRate 表达式（!tickEventDriven || …）曾使两档设计从未生效（adc56c0
+            // 起的潜伏回归），后收窄为与项。
+            val fullRate = session.tabAnimating || session.contentActive ||
+                !session.idleDecayTickEnabled
+            if (lastFullRateNs == 0L) lastFullRateNs = now
+            if (fullRate) lastFullRateNs = now
+            // 深度静止档判定（两级衰减：活动窗口 1s → 30fps 静止档 deepIdleDelayMs →
+            // 1Hz 睡眠）：仅信号驱动会话（idleDecay 开启）适用——满帧率兜底会话无静止态
+            // 可判定。短停顿期间玻璃仍 30fps 跟得上无信号内容变化，只有真正长静止才付
+            // 1Hz 滞后代价；视频 TextureView 在默认信号类内，播放期间信号逐帧续期永不
+            // 降档。
+            val deepIdleWanted = session.idleFrameSleepEnabled && session.idleDecayTickEnabled &&
+                !fullRate && now - lastFullRateNs >= session.deepIdleDelayMs * 1_000_000L
+            if (deepIdleWanted && !wasSleeping) {
+                session.logger?.invoke(
+                    "deep idle: entering 1Hz frame sleep (no content activity for ${session.deepIdleDelayMs}ms)"
+                )
             }
-            // tick 驱动：默认每帧（商店等）；事件驱动模式（商店，内容信号 hook）
-            // 下由内容重绘脏标记驱动——脏标记在 vsync 的动画回调阶段转换为 tick（先于
-            // traversal），玻璃与应用内容同帧绘制；静止（无信号）零重绘，Surface/视图/
-            // 硬件层更新不再闪烁、空闲不烧 GPU。仅选中 tab 进入动画期间自驱。
-            // 静止降帧两档（idleDecayTickEnabled，相册设计/小黑盒首接线）：tickEventDriven=
-            // false 且已接内容活动信号的会话，活动窗口（内容重绘/交互 armActivityWindow
-            // 后 1s）内每帧，静止后降 30fps 低频 tick——低频档仍持续采样，合成空窗的
-            // 空白帧最多停留 ~33ms 自愈（不会像纯事件驱动那样冻帧），省下大部分空闲开销。
-            // **无信号源不得开启**：静止档跟不上无信号的内容变化（持续滞后）。
-            // 注意：`!tickEventDriven && !idleDecayTickEnabled` 兜底项 = 无信号会话的
-            // 每帧恒满档——旧表达式（!tickEventDriven || …）曾使两档设计从未生效
-            // （tickEventDriven=false 恒真短路，静止降帧档不可达，adc56c0 起的潜伏回归）。
-            val fullRate = contentDirty[0] || session.tabAnimating || session.contentActive ||
-                (!session.tickEventDriven && !session.idleDecayTickEnabled)
-            if (!fullRate && session.shouldIdleYield(now / 1_000_000L, contentDirty[0])) {
-                // 静止空闲让步：本帧不 tick，给宿主主队列留出 IdleHandler 冲刷间隙
-                // （见 GlassSession.shouldIdleYield）
-            } else if (fullRate) {
-                contentDirty[0] = false
-                val renderInterval = session.glassRenderIntervalNs
-                // renderInterval 仅事件驱动会话生效（adc56c0 起既有语义——ns 时长门控
-                // 在非整数刷新率比率下拍频，非事件驱动会话的节流走 idleDecay 两档 +
-                // 高刷减半分频；曾试改为对所有会话生效，相册残留 capHz 配置被激活拍频，
-                // 真机回退）
-                val intervalOk = !session.tickEventDriven || renderInterval <= 0L ||
-                    now - tickGate[0] >= renderInterval
+            deepIdle = deepIdleWanted
+            val tickIntervalNs = if (deepIdleWanted) session.deepIdleTickIntervalNs
+            else STATIC_TICK_INTERVAL_NS
+            if (fullRate) {
                 // 高刷减半分频（idleDecay 会话）：偶数帧才 tick——玻璃条带重录制与
                 // Compose traversal 减半，宿主自绘/液泡/按压/选中动画读各自状态独立
                 // 失效不受影响；8dp 模糊下玻璃 60fps 无感
-                if (intervalOk && (halfRateDivider <= 1 || frameIndex % halfRateDivider == 0L)) {
+                if (halfRateDivider <= 1 || frameIndex % halfRateDivider == 0L) {
                     tickGate[0] = now
                     tick.intValue++
                     ticks++
                 }
-            } else if (now - tickGate[0] >= STATIC_TICK_INTERVAL_NS) {
+            } else if (now - tickGate[0] >= tickIntervalNs) {
                 tickGate[0] = now
                 tick.intValue++
                 ticks++
@@ -329,12 +368,6 @@ fun GlassRoot(
     LaunchedEffect(session) {
         snapshotFlow { selectedIndex }
             .collectLatest { session.beginTabAnimation(it) }
-    }
-    // 内容重绘信号 → 置脏标记；帧循环在同一 vsync 的动画回调阶段统一转换为 tick
-    // （先于 traversal）——玻璃与应用内容同帧绘制，单次 traversal，无多余空跑
-    DisposableEffect(session) {
-        session.onContentInvalidated = { contentDirty[0] = true }
-        onDispose { session.onContentInvalidated = null }
     }
     val fallbackInset = WindowInsets.navigationBars.getBottom(density)
     val effectiveInset = if (bottomInset >= 0) bottomInset else fallbackInset
@@ -439,8 +472,8 @@ fun GlassRoot(
                         // 应用驱动的同步变更（selectedIndex 已等于该页）天然不转发，无竞态。
                         if (session.selectedTabIndex() != index) {
                             session.onTabClicked(index)
-                            // 点击转发改动底栏原生视图（非 GL 内容源），事件驱动模式下需显式请求重绘
-                            session.requestTick()
+                            // 点击转发改动底栏原生视图：开满帧率窗口保即时刷新
+                            session.armActivityWindow()
                         }
                     },
                     backdrop = backdrop,
@@ -453,17 +486,17 @@ fun GlassRoot(
                     accentColor = specColors.second,
                     onPreviewTabChanged = {
                         session.previewTabChange(it)
-                        // 拖动预览翻动底栏原生选中态（非 GL 内容源），显式请求重绘
-                        session.requestTick()
+                        // 拖动预览翻动底栏原生选中态：开满帧率窗口保即时刷新
+                        session.armActivityWindow()
                     },
                     onSelectedTabTapped = {
                         session.onTabClicked(it)
-                        session.requestTick()
+                        session.armActivityWindow()
                     },
                     // 拖动结束停在原选中 tab：还原悬停预览（各 tab 原图标/选中态）
                     onPreviewEnded = {
                         session.endTabPreview()
-                        session.requestTick()
+                        session.armActivityWindow()
                     },
                     // 液泡折射副本整层强调色 tint：选中/悬停 tab 在液泡内呈强调色，观感全局一致；
                     // 描述符可关（vivo 官网等"白=底色"编码素材必须关，否则白间隙被染成强调色实心）
@@ -508,7 +541,7 @@ fun GlassRoot(
                                 onClick = {
                                 selectedIndex = index
                                 session.onTabClicked(index)
-                                session.requestTick()
+                                session.armActivityWindow()
                             }) {
                                 if (tab.mirrorWholeTab) {
                                     if (session.extractor.descriptor.iconMode == IconMode.WHOLE_TAB_FULL) {
@@ -888,6 +921,10 @@ private const val MAX_TAB_WIDTH_DP = 70
  *  低频档持续采样是关键——GL 合成空窗的空白录制最多停留一档即自愈，不会冻帧。 */
 private const val STATIC_TICK_INTERVAL_NS = 33_333_333L
 
+/** 原生压制重申 + 补色延迟补取的时间门（原 120 帧窗口帧计数驱动，深度静止档帧不
+ *  流动会饿死；改时间门控——泵帧期与原 1~2s 同量级，睡眠期 1Hz 心跳同样触发）。 */
+private const val REASSERT_INTERVAL_NS = 2_000_000_000L
+
 /**
  * 商店 tab 图标逐帧镜像 Painter：每帧经 [viewProvider] 解析当前应镜像的视图
  * （LOTTIE_RESOLVE 模式下应用切换 Lottie 可见性，首页 ⇄ 刷新），直绘硬件画布——
@@ -918,7 +955,9 @@ private class LiveIconPainter(
         if (!target.isShown || target.width <= 0 || target.height <= 0) return
         canvas.save()
         canvas.scale(size.width / target.width, size.height / target.height)
-        target.draw(canvas)
+        // 单参直绘宿主图标视图（无渲染节点复用，onDraw 无条件触发）：信号抑制
+        // 防自激（被 hook 的 ImageView.onDraw 等），见 GlassSession.signalSuppressed
+        GlassSession.withSignalSuppression { target.draw(canvas) }
         canvas.restore()
     }
 }
@@ -942,7 +981,8 @@ private class LiveViewPainter(
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
         canvas.scale(size.width / vw, size.height / vh)
-        view.draw(canvas)
+        // 单参直绘宿主图标视图：信号抑制防自激（同 LiveIconPainter）
+        GlassSession.withSignalSuppression { view.draw(canvas) }
         canvas.restore()
     }
 }
@@ -1023,7 +1063,9 @@ private class LiveTabFullPainter(
         canvas.save()
         val offsetY = if (alignBottom) size.height - vh else (size.height - vh) / 2f
         canvas.translate((size.width - vw) / 2f, offsetY)
-        view.draw(canvas)
+        // 单参直绘宿主条目视图（小黑盒 = CompoundButton 条目，onDraw 被信号管线
+        // hook）：信号抑制防自激（同 LiveIconPainter）
+        GlassSession.withSignalSuppression { view.draw(canvas) }
         canvas.restore()
     }
 }

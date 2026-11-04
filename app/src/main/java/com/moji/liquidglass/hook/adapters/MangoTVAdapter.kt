@@ -195,7 +195,7 @@ object MangoTVAdapter : AppAdapter {
             // 置零探测节流让下一帧全树发现新页的 51dp 储备，不等 500ms 周期
             activeSessionRef?.get()?.let { session ->
                 lastContentProbeMs = 0L
-                session.requestTick()
+                session.armActivityWindow()
             }
         },
         // 条目自配色（selector 图标 + 标签渐变着色自绘），整层染色会盖掉原生配色
