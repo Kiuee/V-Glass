@@ -33,12 +33,40 @@ object TargetHook {
     private val scheduled = HashMap<Activity, Int>() // 已调度重试轮次（防止 onResume 重复排程）
     private val giveUpLogged = HashSet<Int>() // identityHashCode，仅记录一次放弃日志
 
+    /** 进程级注入计数/指纹（System 属性跨 classloader 共享——温复用旧进程里新旧两套
+     *  模块 dex 各有各的静态区，唯有 System 属性能对账）。 */
+    private const val PROP_INSTALL_COUNT = "moji.liquidglass.install.count"
+    private const val PROP_INSTALL_FINGERPRINTS = "moji.liquidglass.install.fingerprints"
+
+    /** 取证通道读取（卡顿归因样本行自带双构建指纹，无需另抓 logcat）。 */
+    internal fun installFingerprints(): String? = System.getProperty(PROP_INSTALL_FINGERPRINTS)
+
     fun install(
         facade: HookFacade,
         configProvider: () -> ModuleConfig,
         appClassLoader: ClassLoader,
         hostPackage: String,
+        entry: String,
     ) {
+        val count = (System.getProperty(PROP_INSTALL_COUNT)?.toIntOrNull() ?: 0) + 1
+        System.setProperty(PROP_INSTALL_COUNT, count.toString())
+        val fingerprint = moduleFingerprint(entry, appClassLoader)
+        val previous = System.getProperty(PROP_INSTALL_FINGERPRINTS)
+        System.setProperty(
+            PROP_INSTALL_FINGERPRINTS,
+            if (previous.isNullOrEmpty()) fingerprint else "$previous | $fingerprint",
+        )
+        facade.log(android.util.Log.INFO, "module fingerprint #$count: $fingerprint")
+        if (count > 1) {
+            facade.log(
+                android.util.Log.ERROR,
+                "duplicate module injection detected ($count builds/entries in one process): " +
+                    (System.getProperty(PROP_INSTALL_FINGERPRINTS) ?: "") +
+                    " — every hooked method dispatches through all of them (double tax on hot paths). " +
+                    "Host process is stale (module updated without app restart) or both entries/environments " +
+                    "are enabled: reboot the phone and check LSPosed module entries.",
+            )
+        }
         val adapter = AdapterRegistry.byPackage(hostPackage) ?: run {
             facade.log(android.util.Log.WARN, "package not adapted: $hostPackage")
             return
@@ -138,6 +166,40 @@ object TargetHook {
             cached
         }
     }
+
+    /**
+     * 构建指纹（d6bea36 想加的"loaded 行带 module 版本"，本次补齐）：入口 + 本 dex 的
+     * 物理来源（模块 apk 路径/大小/mtime，BaseDexClassLoader.pathList 反射——灰名单，
+     * 取不到时仅留入口与 loader 身份）——不同构建 size/mtime 不同；进程里出现两套指纹
+     * = 温复用旧进程 stale 注入 / 双入口双载（上方的重复注入 ERROR 据此触发）。
+     */
+    private fun moduleFingerprint(entry: String, loader: ClassLoader): String {
+        val dexPath = runCatching {
+            val pathList = loader.javaClass.getDeclaredField("pathList")
+                .apply { isAccessible = true }.get(loader)
+            val elements = pathList.javaClass.getDeclaredField("dexElements")
+                .apply { isAccessible = true }.get(pathList) as? Array<*>
+            val first = elements?.firstOrNull() ?: return@runCatching null
+            for (name in arrayOf("path", "file", "dexFile")) {
+                val field = first.javaClass.getDeclaredField(name)
+                    .apply { isAccessible = true }
+                when (val value = field.get(first)) {
+                    is java.io.File -> return@runCatching value.path
+                    is String -> return@runCatching value
+                    is dalvik.system.DexFile -> return@runCatching value.name
+                }
+            }
+            null
+        }.getOrNull()
+        val meta = dexPath?.let { path ->
+            runCatching {
+                val f = java.io.File(path)
+                "apk=$path size=${f.length()} mtime=${f.lastModified()}"
+            }.getOrNull()
+        } ?: "dex=?"
+        return "$entry $meta loader@${System.identityHashCode(loader)}"
+    }
+
 
     private fun scheduleProbe(
         activity: Activity,

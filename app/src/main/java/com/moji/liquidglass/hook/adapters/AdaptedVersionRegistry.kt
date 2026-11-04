@@ -27,6 +27,7 @@ object AdaptedVersionRegistry {
         "com.autonavi.minimap" to listOf("17.02.0.2010"),
         "com.eg.android.AlipayGphone" to listOf("12.12.36.7600"),
         "com.hunantv.imgo.activity" to listOf("9.4.7"),
+        "com.max.xiaoheihe" to listOf("1.3.400"),
 
     )
 }

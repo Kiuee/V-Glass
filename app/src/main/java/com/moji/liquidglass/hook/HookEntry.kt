@@ -15,10 +15,13 @@ class HookEntry : XposedModule() {
     override fun onPackageLoaded(param: XposedModuleInterface.PackageLoadedParam) {
         val pkg = param.packageName
         if (!AdapterRegistry.isSupported(pkg)) return
-        // 双通道写日志，保证无论框架如何改写 tag 都能被 logcat 过滤到
-        log(Log.INFO, TAG, "[$TAG] loaded into $pkg (loader=${param.defaultClassLoader})")
+        // 双通道写日志，保证无论框架如何改写 tag 都能被 logcat 过滤到。构建指纹由
+        // TargetHook.install 统一输出（dex 路径/大小/mtime + 重复注入检测）。
+        log(Log.INFO, TAG, "[$TAG] loaded into $pkg (modern entry)")
         Log.println(Log.INFO, TAG, "loaded into $pkg (modern entry)")
-        Thread { TargetHook.install(ModernFacade(this), ::readConfig, param.defaultClassLoader, pkg) }.start()
+        Thread {
+            TargetHook.install(ModernFacade(this), ::readConfig, param.defaultClassLoader, pkg, "modern")
+        }.start()
     }
 
     private fun readConfig(): ModuleConfig = try {

@@ -19,7 +19,9 @@ class LegacyHookEntry : IXposedHookLoadPackage {
         if (!AdapterRegistry.isSupported(pkg)) return
         Log.println(Log.INFO, TAG, "loaded into $pkg (legacy entry)")
         XposedBridge.log("[$TAG] loaded into $pkg (legacy entry)")
-        Thread { TargetHook.install(LegacyFacade(), ::readConfig, lpparam.classLoader, pkg) }.start()
+        Thread {
+            TargetHook.install(LegacyFacade(), ::readConfig, lpparam.classLoader, pkg, "legacy")
+        }.start()
     }
 
     private fun newPrefs(): XSharedPreferences? = try {

@@ -76,7 +76,18 @@ import kotlin.math.sign
  * 原几何——上游结构里折射副本行与液泡 bounds 完全重合，ClippedViewBackdrop 的消费者
  * 自裁剪 + blur 边界淡出把"近透明带"搬进了胶囊/液泡的可见内部（选中态胶囊背景顶部
  * 透明根因，详见 MAINTENANCE.md §1.2 液泡折射源外扩）。
+ * 偏离上游 1:1（2026-11-03）：外层盒高固定为 栏高+24dp（折射行外扩布局预算，默认档
+ * blur 8dp 时的高度）——上游 wrap 测量会让折射行外扩（随模糊半径缩放）参与整体高度，
+ * 主栏视觉在盒内居中 → 模糊每 +1dp 主栏上移 2dp（样式页拖模糊滑杆整栏上下漂移）。
+ * 固定后模糊 ≠ 默认档时折射行对称溢出（Compose 不裁切），默认档位逐位不变（§0.4）。
  */
+
+/** 折射副本行外扩的布局预算：LiquidBottomTabs 外层盒高 = 栏高 + 此值（该行在盒内
+ *  居中，下沿外扩 = [REFRACTION_BOX_OVERDRAW_BELOW]，alpha=0 视觉不可见）。GlassRoot
+ *  底部 padding 据此扣除，保证 bottomGap=0 语义 = 玻璃胶囊底边贴导航条顶（v3.2
+ *  语义定案；全局影响：默认档玻璃栏较旧实现下移 [REFRACTION_BOX_OVERDRAW_BELOW]）。 */
+internal val REFRACTION_BOX_EXTRA_HEIGHT = 24.dp
+internal val REFRACTION_BOX_OVERDRAW_BELOW = REFRACTION_BOX_EXTRA_HEIGHT / 2
 @Composable
 fun LiquidBottomTabs(
     selectedTabIndex: () -> Int,
@@ -120,7 +131,13 @@ fun LiquidBottomTabs(
     val refractionCopyOverdraw = blurRadius * 2f
 
     BoxWithConstraints(
-        modifier,
+        // 高度必须固定（见 REFRACTION_BOX_EXTRA_HEIGHT）：折射副本行的外扩随模糊半径
+        // 缩放（4×blur），其 required* 会参与本盒 wrap 测量——外扩只朝上方生长（下游
+        // ComposeView 为 Gravity.BOTTOM 钉底），主栏视觉在本盒内居中 → 模糊每 +1dp
+        // 主栏上移 2dp = 样式页拖动模糊滑杆"整栏上下移动"（真机）。
+        // 固定后：模糊 ≠ 默认档时折射行改为对称溢出（Compose 不裁切、外扩语义不变），
+        // 默认档位下逐位不变（§0.4）。
+        modifier.height(barHeight + REFRACTION_BOX_EXTRA_HEIGHT),
         contentAlignment = Alignment.CenterStart
     ) {
         val density = LocalDensity.current

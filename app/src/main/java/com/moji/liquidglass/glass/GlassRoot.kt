@@ -66,6 +66,7 @@ import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.shapes.Capsule
+import com.moji.liquidglass.glass.components.REFRACTION_BOX_OVERDRAW_BELOW
 import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
@@ -88,6 +89,8 @@ import kotlin.math.tanh
  * 布局：ComposeView（WRAP_CONTENT、Gravity.BOTTOM）→ 根 Box 顶部 48dp 为辉光/液泡
  * 放大余量；玻璃栏底边内边距 = 应用真实导航栏 inset（navInsetProvider 三级回退）——
  * 玻璃栏抬升到小白条上方，下方条带透出全出血的信息流内容。
+ * 底部语义（v3.2）：bottomGap=0 = 玻璃胶囊底边贴导航条顶——折射副本行下沿外扩
+ * （REFRACTION_BOX_OVERDRAW_BELOW，alpha=0 视觉不可见）已从底部 padding 扣除。
  * 二楼下拉位移经 GlassBarState 驱动 graphicsLayer 跟随，与原软件行为一致。
  *
  * 多目标：渲染由 GlassBarSpec（适配器提取）驱动——
@@ -399,9 +402,12 @@ fun GlassRoot(
             .align(Alignment.BottomCenter)
             .padding(
                 bottom = with(density) {
-                    // 底部间隙支持负值（玻璃栏下沉贴齐小白条本体，导航区域顶 = inset），
-                    // 总 padding 收敛非负防布局异常
-                    (effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp).coerceAtLeast(0.dp)
+                    // 底部语义（v3.2 定案）：bottomGap=0 = 玻璃胶囊底边贴导航条顶（inset
+                    // 上沿）。LiquidBottomTabs 外层盒比栏高多出折射行下沿外扩（alpha=0
+                    // 视觉不可见，REFRACTION_BOX_OVERDRAW_BELOW），此处扣除还原语义；
+                    // inset+gap 不足该值时收敛 0（负 padding 非法，玻璃最低贴内容底）。
+                    (effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp -
+                        REFRACTION_BOX_OVERDRAW_BELOW).coerceAtLeast(0.dp)
                 }
             )
                     .graphicsLayer {
