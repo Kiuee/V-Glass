@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text as M3Text
 import androidx.compose.ui.Modifier
@@ -34,18 +35,23 @@ import com.moji.liquidglass.ui.ServiceBridge
 import com.moji.liquidglass.ui.theme.LocalEnableBlur
 import com.moji.liquidglass.ui.util.BlurredBar
 import com.moji.liquidglass.ui.util.rememberBlurBackdrop
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import androidx.compose.runtime.Composable
@@ -73,6 +79,41 @@ fun BarStyleScreenMiuix(onBack: () -> Unit) {
     var editing by remember { mutableStateOf<BarValueEditor?>(null) }
     editing?.let { BarValueEditDialogMiuix(editor = it, onDismiss = { editing = null }) }
 
+    // 右上角"还原默认"：二次确认后仅重置样式页参数（保留开关/按应用开关等非样式字段）
+    var showResetDialog by remember { mutableStateOf(false) }
+    if (showResetDialog) {
+        val dismissState = LocalDismissState.current
+        val dismiss: () -> Unit = { dismissState?.invoke() ?: run { showResetDialog = false } }
+        WindowDialog(
+            show = true,
+            title = stringResource(R.string.bar_reset_defaults_title),
+            summary = stringResource(R.string.bar_reset_defaults_message),
+            onDismissRequest = { showResetDialog = false },
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TextButton(
+                    text = stringResource(R.string.action_cancel),
+                    onClick = dismiss,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(20.dp))
+                TextButton(
+                    text = stringResource(R.string.action_confirm),
+                    enabled = ServiceBridge.bound,
+                    onClick = {
+                        config.commit(config.config.withBarStyleDefaults())
+                        dismiss()
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                )
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             BlurredBar(backdrop) {
@@ -88,6 +129,18 @@ fun BarStyleScreenMiuix(onBack: () -> Unit) {
                                 },
                                 imageVector = MiuixIcons.Back,
                                 contentDescription = null,
+                                tint = colorScheme.onBackground,
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(
+                            enabled = ServiceBridge.bound,
+                            onClick = { showResetDialog = true },
+                        ) {
+                            androidx.compose.material3.Icon(
+                                imageVector = MiuixIcons.Refresh,
+                                contentDescription = stringResource(R.string.bar_reset_defaults),
                                 tint = colorScheme.onBackground,
                             )
                         }
@@ -251,25 +304,45 @@ fun BarStyleScreenMiuix(onBack: () -> Unit) {
                                     },
                                     onCommit = { config.commit(config.config.copy(barSaturation = it)) },
                                 )
-                                val refractionTitle = stringResource(R.string.bar_refraction)
+                                val refractionAmountTitle = stringResource(R.string.bar_refraction_amount)
                                 MiuixSliderRow(
-                                    title = refractionTitle,
-                                    value = c.barRefractionScale,
+                                    title = refractionAmountTitle,
+                                    value = c.barRefractionAmountScale,
                                     range = 0f..2f,
                                     valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
                                     enabled = ServiceBridge.bound,
                                     onValueTextClick = {
                                         editing = BarValueEditor(
-                                            title = refractionTitle,
+                                            title = refractionAmountTitle,
                                             range = 0f..2f,
                                             format = { String.format(pctFmt, (it * 100).roundToInt()) },
                                             toEditable = { (it * 100).roundToInt().toString() },
                                             parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 2f) },
-                                            current = c.barRefractionScale,
-                                            commit = { config.commit(config.config.copy(barRefractionScale = it)) },
+                                            current = c.barRefractionAmountScale,
+                                            commit = { config.commit(config.config.copy(barRefractionAmountScale = it)) },
                                         )
                                     },
-                                    onCommit = { config.commit(config.config.copy(barRefractionScale = it)) },
+                                    onCommit = { config.commit(config.config.copy(barRefractionAmountScale = it)) },
+                                )
+                                val refractionHeightTitle = stringResource(R.string.bar_refraction_height)
+                                MiuixSliderRow(
+                                    title = refractionHeightTitle,
+                                    value = c.barRefractionHeightScale,
+                                    range = 0f..2f,
+                                    valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = refractionHeightTitle,
+                                            range = 0f..2f,
+                                            format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                            toEditable = { (it * 100).roundToInt().toString() },
+                                            parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 2f) },
+                                            current = c.barRefractionHeightScale,
+                                            commit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
                                 )
                             }
                         }

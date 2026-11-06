@@ -115,7 +115,11 @@
     <string name="bar_blur">模糊半径</string>
     <string name="bar_surface_alpha">表面色不透明度</string>
     <string name="bar_saturation">色彩饱和度</string>
-    <string name="bar_refraction">折射强度</string>
+    <string name="bar_refraction_amount">折射量</string>
+    <string name="bar_refraction_height">折射高度</string>
+    <string name="bar_reset_defaults">还原默认</string>
+    <string name="bar_reset_defaults_title">还原默认样式？</string>
+    <string name="bar_reset_defaults_message">所有玻璃栏样式参数将恢复为默认值。</string>
     <string name="bar_value_dp_fmt">%1$d dp</string>
     <string name="bar_value_pct_fmt">%1$d%%</string>
     <string name="bar_value_times_fmt">%1$.2f×</string>

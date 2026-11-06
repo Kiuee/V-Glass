@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredHeight
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -28,12 +26,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -41,9 +49,10 @@ import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberCombinedBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.moji.liquidglass.glass.LayerScaleScope
 import com.moji.liquidglass.glass.utils.DampedDragAnimation
 import com.moji.liquidglass.glass.utils.InteractiveHighlight
 import com.kyant.backdrop.drawBackdrop
@@ -72,22 +81,15 @@ import kotlin.math.sign
  * 新增 tintRefractionContent（折射副本层是否整层强调色 tint：LOTTIE_RESOLVE 与 WHOLE_TAB
  * 两模式均开启——选中/悬停 tab 在液泡内呈强调色，观感全局一致）。
  * 偏离上游 1:1（2026-10-23）：折射副本行（第二行 Row）四周外扩 2×blurRadius（required*
- * 尺寸，无视父约束——width/height 会被父 max 收敛致外扩失效）、内容区经 padding 锁回
- * 原几何——上游结构里折射副本行与液泡 bounds 完全重合，ClippedViewBackdrop 的消费者
- * 自裁剪 + blur 边界淡出把"近透明带"搬进了胶囊/液泡的可见内部（选中态胶囊背景顶部
- * 透明根因，详见 MAINTENANCE.md §1.2 液泡折射源外扩）。
- * 偏离上游 1:1（2026-11-03）：外层盒高固定为 栏高+24dp（折射行外扩布局预算，默认档
- * blur 8dp 时的高度）——上游 wrap 测量会让折射行外扩（随模糊半径缩放）参与整体高度，
- * 主栏视觉在盒内居中 → 模糊每 +1dp 主栏上移 2dp（样式页拖模糊滑杆整栏上下漂移）。
- * 固定后模糊 ≠ 默认档时折射行对称溢出（Compose 不裁切），默认档位逐位不变（§0.4）。
+ * 尺寸）+ 盒高固定——用于胶囊裁剪时代的淡出带规避。**2.9.12 回退**：采样改条带矩形后
+ * 淡出带整类消失，外扩失去存在原因；且副本行节点 = 节点高 + 2×(2×blur+14dp×量倍数)
+ * **随模糊半径无界增长**（blur 24 时 176dp，盒/ComposeView/窗口全被撑溢）→ 溢出部分
+ * 被窗口画布裁空（2.9.1 实证）= 磨砂透明条带 ∝ 半径、全套采样几何 ∝ 半径 = "位移随
+ * 模糊半径增大"。2.9.12 恢复上游结构：副本行 = 液泡同界（无外扩），模糊外扩回归
+ * **库效果层对称外扩**（效果纹理 = 节点 ± 半径，条带边距 ≥ 半径保证覆盖），盒高 wrap
+ * （最高子项 = 主栏）——结构尺寸与模糊半径完全无关（上游即此，底栏不随半径移动）。
+ * raw 腿/折射腿的采样补偿标定拨盘已完成标定使命并移除（2.9.16，默认参数即正确）。
  */
-
-/** 折射副本行外扩的布局预算：LiquidBottomTabs 外层盒高 = 栏高 + 此值（该行在盒内
- *  居中，下沿外扩 = [REFRACTION_BOX_OVERDRAW_BELOW]，alpha=0 视觉不可见）。GlassRoot
- *  底部 padding 据此扣除，保证 bottomGap=0 语义 = 玻璃胶囊底边贴导航条顶（v3.2
- *  语义定案；全局影响：默认档玻璃栏较旧实现下移 [REFRACTION_BOX_OVERDRAW_BELOW]）。 */
-internal val REFRACTION_BOX_EXTRA_HEIGHT = 24.dp
-internal val REFRACTION_BOX_OVERDRAW_BELOW = REFRACTION_BOX_EXTRA_HEIGHT / 2
 @Composable
 fun LiquidBottomTabs(
     selectedTabIndex: () -> Int,
@@ -95,14 +97,18 @@ fun LiquidBottomTabs(
     backdrop: Backdrop,
     tabsCount: Int,
     modifier: Modifier = Modifier,
-    barHeight: Dp = 64f.dp,
-    blurRadius: Dp = 8f.dp,
+    barHeight: Dp = 60f.dp,
+    blurRadius: Dp = 6f.dp,
     /** 玻璃表面色不透明度（0~1）：叠在模糊内容上的底色浓度，0 = 纯透明玻璃。 */
-    surfaceAlpha: Float = 0.4f,
+    surfaceAlpha: Float = 0.2f,
     /** 色彩饱和度（vibrancy = colorControls(saturation)）：模糊内容的鲜艳度。 */
     saturation: Float = 1.5f,
-    /** 折射强度：玻璃边缘与液泡 lens 位移的缩放系数，0 = 无折射平边。 */
-    refractionScale: Float = 1f,
+    /** 折射量：玻璃边缘与液泡 lens 位移幅度（shader refractionAmount）的缩放系数，
+     *  0 = 无折射平边。默认 1（100%）。 */
+    refractionAmountScale: Float = 1f,
+    /** 折射高度：折射带宽（边缘向内发生折射的距离，shader refractionHeight）的缩放系数，
+     *  0 = 无折射平边。默认 0.35（35%）。 */
+    refractionHeightScale: Float = 0.35f,
     accentColor: Color? = null,
     onPreviewTabChanged: ((Int) -> Unit)? = null,
     onSelectedTabTapped: ((Int) -> Unit)? = null,
@@ -121,23 +127,14 @@ fun LiquidBottomTabs(
         else Color(0xFF121212).copy(alpha = surfaceAlpha)
 
     val tabsBackdrop = rememberLayerBackdrop()
-
-    // 折射副本行四周外扩量 = 2×模糊半径：ClippedViewBackdrop 把每个消费者的采样裁剪到
-    // 自身胶囊形（防矩形采样色带），blur 的高斯混合在裁剪边界内侧产生 ~1-2 个模糊半径的
-    // 淡出带——折射副本行原 bounds 与液泡/胶囊完全重合（同为 barHeight−8dp 居中），胶囊
-    // 顶边正好压在淡出带上（顶部磨砂近透明、原始内容透出）。外扩后淡出带落在胶囊采样区
-    // 之外；同时 ≥ 液泡 lens 最大外向位移（refractionAmount = 14dp·progress），按压/拖动
-    // 时边缘不再取样到空环。内容区经 padding 锁回原几何（见下方折射副本行）。
-    val refractionCopyOverdraw = blurRadius * 2f
+    // 副本行坐标（液泡组合采样源的对齐基准；见 BubbleCombinedBackdrop）
+    var copyRowCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
 
     BoxWithConstraints(
-        // 高度必须固定（见 REFRACTION_BOX_EXTRA_HEIGHT）：折射副本行的外扩随模糊半径
-        // 缩放（4×blur），其 required* 会参与本盒 wrap 测量——外扩只朝上方生长（下游
-        // ComposeView 为 Gravity.BOTTOM 钉底），主栏视觉在本盒内居中 → 模糊每 +1dp
-        // 主栏上移 2dp = 样式页拖动模糊滑杆"整栏上下移动"（真机）。
-        // 固定后：模糊 ≠ 默认档时折射行改为对称溢出（Compose 不裁切、外扩语义不变），
-        // 默认档位下逐位不变（§0.4）。
-        modifier.height(barHeight + REFRACTION_BOX_EXTRA_HEIGHT),
+        // 盒高 wrap（上游同款）：最高子项 = 主栏（barHeight），副本行/液泡同界且更矮、
+        // 居中——**结构尺寸与模糊半径完全无关**（模糊外扩回归库效果层对称外扩，见类
+        // KDoc 2.9.12 回退说明），底栏/背景不随模糊滑杆移动。
+        modifier,
         contentAlignment = Alignment.CenterStart
     ) {
         val density = LocalDensity.current
@@ -275,8 +272,8 @@ fun LiquidBottomTabs(
                             colorControls(saturation = saturation)
                             blur(blurRadius.toPx())
                             lens(
-                                24f.dp.toPx() * refractionScale,
-                                24f.dp.toPx() * refractionScale
+                                24f.dp.toPx() * refractionHeightScale,
+                                24f.dp.toPx() * refractionAmountScale
                             )
                         },
                         layerBlock = {
@@ -311,6 +308,7 @@ fun LiquidBottomTabs(
                     .align(Alignment.Center)
                     .clearAndSetSemantics {}
                     .alpha(0f)
+                    .onGloballyPositioned { copyRowCoordinates = it }
                     .layerBackdrop(tabsBackdrop)
                     .graphicsLayer {
                         translationX = panelOffset
@@ -322,10 +320,12 @@ fun LiquidBottomTabs(
                             val progress = dampedDragAnimation.pressProgress
                             colorControls(saturation = saturation)
                             blur(blurRadius.toPx())
-                            lens(
-                                24f.dp.toPx() * refractionScale * progress,
-                                24f.dp.toPx() * refractionScale * progress
-                            )
+                            // 无 lens（2.9.14 移除，上游有但实际不可见）：副本行 2.9.12 起
+                            // = 液泡同界，其 lens 折射带正好落在液泡边缘——上游 blur 固定
+                            // 8dp < 最大外拉 24dp×p，折射带采样越界透明 → 恒塌落到 raw 腿
+                            // 从未可见；本模块 blur 可调大（≥24dp 时全覆盖）→ 24dp 折射位
+                            // 移完整显形 = "悬停折射背景位移"。磨砂层退化为纯磨砂，液泡
+                            // 边缘折射观感由液泡自身 lens 承担（下方液泡 Box）。
                         },
                         highlight = {
                             val progress = dampedDragAnimation.pressProgress
@@ -334,14 +334,13 @@ fun LiquidBottomTabs(
                         onDrawSurface = { drawRect(containerColor) }
                     )
                     .then(interactiveHighlight.modifier)
-                    // 外扩尺寸 + 补偿 padding：磨砂录制区超出液泡采样范围，内容区（图标/
-                    // 标签/clickable）锁回原几何 barWidth−8dp × barHeight−8dp 原位居中。
-                    // 必须用 required*：width/height 是优先尺寸（enforceIncoming），会被
-                    // 父容器 max 约束收敛（父 Box 按 barWidth 定宽）——外扩静默失效而补偿
-                    // padding 照常生效，内容区被挤偏/变窄（2026-10-23 真机回归根因）
-                    .requiredHeight(barHeight - 8f.dp + refractionCopyOverdraw * 2)
-                    .requiredWidth(maxWidth + refractionCopyOverdraw * 2)
-                    .padding(horizontal = 4f.dp + refractionCopyOverdraw, vertical = refractionCopyOverdraw)
+                    // 上游同款（2.9.12 回退节点外扩）：副本行 = 液泡同界（栏高−8dp ×
+                    // 全宽），模糊外扩回归库效果层对称外扩（效果纹理 = 节点 ± blur，
+                    // 条带边距 max(8dp, clipOutset) ≥ blur 保证覆盖）——节点尺寸与模糊
+                    // 半径无关，不再溢出盒/窗口被裁（2.9.1 实证的空带源）。
+                    .height(barHeight - 8f.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 4f.dp)
                     .graphicsLayer(
                         colorFilter = if (tintRefractionContent) {
                             ColorFilter.tint(resolvedAccentColor)
@@ -365,13 +364,29 @@ fun LiquidBottomTabs(
                 .then(interactiveHighlight.gestureModifier)
                 .then(dampedDragAnimation.modifier)
                 .drawBackdrop(
-                    backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
+                    backdrop = remember(backdrop, tabsBackdrop) {
+                        BubbleCombinedBackdrop(backdrop, tabsBackdrop) { copyRowCoordinates }
+                    },
                     shape = { Capsule() },
                     effects = {
                         val progress = dampedDragAnimation.pressProgress
+                        // 效果层采样环：液泡自身无 blur（磨砂来自下方折射副本行录制层），
+                        // 而 Kyant lens 只消耗、从不抬升 padding（库 effects/Lens.kt:25：
+                        // `padding = (padding − refractionHeight) → 0`）——效果层退化为
+                        // 液泡 bounds 本体、没有外扩环，lens 位移与色散（chromaticAberration
+                        // 沿 grad 双向偏移）越出 bounds 的采样命中空层 = 液泡边缘透明
+                        // （2.9.0 及以前所有版本的本体 bug）。环宽 = lens 最大位移
+                        // （14dp×量倍数×progress）+ lens 自身消耗的折射高度（10dp×高倍数
+                        // ×progress，2.9.14 补：旧公式漏此项，满按差 ~3.5dp）+ 色散余量
+                        // 2dp；环的内容 = combined：raw（ClippedViewBackdrop clipOutset
+                        // 已外扩）+ 副本磨砂（副本行 = 液泡同界，环超出副本界的部分落
+                        // raw = 物理正确兜底，上游同款）。
+                        val ring = 14f.dp.toPx() * refractionAmountScale * progress +
+                            10f.dp.toPx() * refractionHeightScale * progress + 2f.dp.toPx()
+                        if (padding < ring) padding = ring
                         lens(
-                            10f.dp.toPx() * refractionScale * progress,
-                            14f.dp.toPx() * refractionScale * progress,
+                            10f.dp.toPx() * refractionHeightScale * progress,
+                            14f.dp.toPx() * refractionAmountScale * progress,
                             chromaticAberration = true
                         )
                     },
@@ -438,4 +453,82 @@ fun LiquidBottomTabs(
         }
         }
     }
+}
+
+/**
+ * 液泡组合采样源（世界锚定）：raw 条带采样（ClippedViewBackdrop，自带 layerBlock 逆
+ * 缩放）+ 折射副本行录制层。两层均以 layerBlock 逆缩放抵消正向缩放（**节点中心为轴**，
+ * 与正向缩放轴点一致——正向经普通 `Modifier.graphicsLayer` 施加，Compose 默认
+ * TransformOrigin.Center = layout 尺寸中点，androidx 源码实锤；**轴点取
+ * coordinates.size/2，不得取 DrawScope.size/2**——效果层 = 节点 ± padding，DrawScope
+ * 原点经库 translate(padding,padding) 对齐节点左上，size/2 = 节点中心 + padding）——
+ * 不施加逆补偿时，按压/悬停缩放（k≈1.39）使采样内容随玻璃缩放偏移，压在玻璃 80% 透明
+ * 可见的真实内容（栏体自身图标/标签）旁 = 图标/标签重影 + 内容错位（2.9.2 真机实证）。
+ * **轴点不一致的残差 = (1−k)×轴点差**：顶左轴（2.9.6~2.9.8，含库 InverseLayerScope
+ * 同款顶左——其纯色 backdrop demo 漂移不可见）残差 −(k−1)×节点中心：液泡磨砂上左漂
+ * ~10dp、相对栏体 ~9dp = 边界磨砂断层 + 采样窗口越界透明条带；DrawScope.size/2 轴
+ * （2.9.9 误修）残差 +(k−1)×padding = 右下位移 ∝ 模糊半径、悬停随液泡 ring 增大
+ * （2.9.9 真机"折射背景右下位移"）；2.9.5"正向=顶左"系当时实验帧/枢轴混淆所误推，
+ * 2.9.9/2.9.10 两轮修订。**算子序（2.9.13 修订）= 库 LayerBackdrop 同款：逆缩放在前
+ * 声明、对齐平移在后声明**（先声明 = 外层 → 平移在缩放内；2.9.11 曾误统一为"平移在
+ * 前" = 平移在缩放外，残差 (1−1/k)×对齐量，双腿同错）。轴点一致 → 精确抵消，采样内容
+ * 世界锚定（官方教程语义 "content will scale but the backdrop won't scale"）。
+ *
+ * 对齐平移用副本行 positionInWindow 差值（变换感知；副本行内层 panelOffset 弹性平移
+ * 属于录制内容自身，随录制走 = 拖动弹性时折射副本随动，与库行为一致）。
+ */
+private class BubbleCombinedBackdrop(
+    private val raw: Backdrop,
+    private val layer: LayerBackdrop,
+    private val layerCoordinates: () -> LayoutCoordinates?,
+) : Backdrop {
+
+    override val isCoordinatesDependent: Boolean = true
+
+    override fun DrawScope.drawBackdrop(
+        density: Density,
+        coordinates: LayoutCoordinates?,
+        layerBlock: (GraphicsLayerScope.() -> Unit)?
+    ) {
+        val coordinates = coordinates ?: return
+        // layerBlock 缩放读数（size/density 先设——layerBlock 读 size/dp.toPx，裸实例
+        // = NaN → scale(NaN) → 画布矩阵 NaN 整层不绘制，2.9.3 回归实证）。**读回尺寸 =
+        // coordinates.size（节点 layout 尺寸）**：正向 layerBlock 在 graphicsLayer 里
+        // 读到的 size = 节点尺寸，正/读两侧同源（2.9.10 前误用 DrawScope.size =
+        // 节点+2×padding，含效果层 padding）。
+        var layerScaleX = 1f
+        var layerScaleY = 1f
+        if (layerBlock != null) {
+            layerScope.size = Size(coordinates.size.width.toFloat(), coordinates.size.height.toFloat())
+            layerScope.density = density.density
+            layerScope.fontScale = density.fontScale
+            layerScope.scaleX = 1f
+            layerScope.scaleY = 1f
+            layerScope.layerBlock()
+            layerScaleX = layerScope.scaleX
+            layerScaleY = layerScope.scaleY
+            if (!layerScaleX.isFinite() || layerScaleX <= 0f) layerScaleX = 1f
+            if (!layerScaleY.isFinite() || layerScaleY <= 0f) layerScaleY = 1f
+        }
+        // raw 条带采样（layerBlock 逆缩放由 ClippedViewBackdrop 自行施加，同轴同构）
+        with(raw) { drawBackdrop(density, coordinates, layerBlock) }
+        // 副本录制层消费：**库 LayerBackdrop.drawBackdrop 逐字对齐（catalog 同款）**——
+        // scale(1/s, Offset.Zero) 在前声明（外层）、translate(-offset) 在后声明（内，
+        // 平移在缩放内）；轴点 = 画布原点（非节点中心，2.9.13 曾误取）；offset = 消费者
+        // 在副本行坐标系中的位置（localPositionOf 优先，异常回退 positionInWindow 差）。
+        val layerCoords = layerCoordinates() ?: return
+        val offset = try {
+            layerCoords.localPositionOf(coordinates)
+        } catch (_: Exception) {
+            coordinates.positionInWindow() - layerCoords.positionInWindow()
+        }
+        withTransform({
+            scale(1f / layerScaleX, 1f / layerScaleY, Offset.Zero)
+            translate(-offset.x, -offset.y)
+        }) {
+            drawLayer(layer.graphicsLayer)
+        }
+    }
+
+    private val layerScope = LayerScaleScope()
 }

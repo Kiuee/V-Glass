@@ -15,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -22,6 +24,7 @@ import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -55,6 +58,30 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
     var editing by remember { mutableStateOf<BarValueEditor?>(null) }
     editing?.let { BarValueEditDialogMaterial(editor = it, onDismiss = { editing = null }) }
 
+    // 右上角"还原默认"：二次确认后仅重置样式页参数（保留开关/按应用开关等非样式字段）
+    var showResetDialog by remember { mutableStateOf(false) }
+    if (showResetDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title = { Text(stringResource(R.string.bar_reset_defaults_title)) },
+            text = { Text(stringResource(R.string.bar_reset_defaults_message)) },
+            confirmButton = {
+                TextButton(
+                    enabled = ServiceBridge.bound,
+                    onClick = {
+                        config.commit(config.config.withBarStyleDefaults())
+                        showResetDialog = false
+                    },
+                ) { Text(stringResource(R.string.action_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
@@ -63,6 +90,17 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                    }
+                },
+                actions = {
+                    IconButton(
+                        enabled = ServiceBridge.bound,
+                        onClick = { showResetDialog = true },
+                    ) {
+                        Icon(
+                            Icons.Rounded.RestartAlt,
+                            contentDescription = stringResource(R.string.bar_reset_defaults),
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -238,10 +276,10 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
                         )
                     },
                     {
-                        val title = stringResource(R.string.bar_refraction)
+                        val title = stringResource(R.string.bar_refraction_amount)
                         SegmentedSliderItem(
                             title = title,
-                            value = c.barRefractionScale,
+                            value = c.barRefractionAmountScale,
                             valueRange = 0f..2f,
                             valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
                             enabled = ServiceBridge.bound,
@@ -252,11 +290,33 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
                                     format = { String.format(pctFmt, (it * 100).roundToInt()) },
                                     toEditable = { (it * 100).roundToInt().toString() },
                                     parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 2f) },
-                                    current = c.barRefractionScale,
-                                    commit = { config.commit(config.config.copy(barRefractionScale = it)) },
+                                    current = c.barRefractionAmountScale,
+                                    commit = { config.commit(config.config.copy(barRefractionAmountScale = it)) },
                                 )
                             },
-                            onCommit = { config.commit(config.config.copy(barRefractionScale = it)) },
+                            onCommit = { config.commit(config.config.copy(barRefractionAmountScale = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_refraction_height)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barRefractionHeightScale,
+                            valueRange = 0f..2f,
+                            valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..2f,
+                                    format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    toEditable = { (it * 100).roundToInt().toString() },
+                                    parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 2f) },
+                                    current = c.barRefractionHeightScale,
+                                    commit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
                         )
                     },
                 ),

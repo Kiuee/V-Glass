@@ -19,21 +19,25 @@ data class ModuleConfig(
      *            由装配后扫描兜底，暂不默认） */
     val contentExtend: String = CONTENT_EXTEND_SOURCE,
     /** 玻璃栏最小安全边距（dp）：栏宽 = min(可用宽 − 2×此值, tab 数 × 96dp + 8dp)，
-     *  tab 少时栏收窄居中、边距自动放大，此值只作为下限。默认 16dp。 */
-    val barMarginDp: Float = 16f,
+     *  tab 少时栏收窄居中、边距自动放大，此值只作为下限。默认 20dp。 */
+    val barMarginDp: Float = 20f,
     /** 小白条上方额外间隙（dp），叠加在导航栏 inset 之上。 */
     val barBottomGapDp: Float = 0f,
     /** 玻璃栏高度（dp），内容行 = 栏高 - 8dp。 */
-    val barHeightDp: Float = 64f,
+    val barHeightDp: Float = 60f,
     /** 折射模糊半径（dp）。 */
-    val barBlurDp: Float = 8f,
+    val barBlurDp: Float = 5f,
     /** 玻璃表面色不透明度（0~1）：叠在模糊内容上的浅/深底色浓度，0 = 纯透明玻璃。
-     *  默认 0.4 与历史硬编码一致。 */
-    val barSurfaceAlpha: Float = 0.4f,
-    /** 色彩饱和度（vibrancy）：模糊内容的鲜艳度，默认 1.5 与历史硬编码一致（iOS 同款）。 */
+     *  默认 0.25（真机定稿观感）。 */
+    val barSurfaceAlpha: Float = 0.25f,
+    /** 色彩饱和度（vibrancy）：模糊内容的鲜艳度，默认 1.5（iOS 同款）。 */
     val barSaturation: Float = 1.5f,
-    /** 折射强度：玻璃边缘与液泡折射位移的缩放系数，0 = 无折射平边。默认 1 与历史一致。 */
-    val barRefractionScale: Float = 1f,
+    /** 折射量：玻璃边缘与液泡折射位移幅度（shader refractionAmount）的缩放系数，
+     *  0 = 无折射平边。默认 1（100%）。 */
+    val barRefractionAmountScale: Float = 1f,
+    /** 折射高度：折射带宽（边缘向内发生折射的距离，shader refractionHeight）的缩放系数，
+     *  0 = 无折射平边。默认 0.50（50%，真机定稿观感）。 */
+    val barRefractionHeightScale: Float = 0.50f,
     /** 是否显示 tab 文字标签。 */
     val barShowLabels: Boolean = true,
     /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
@@ -51,6 +55,21 @@ data class ModuleConfig(
 ) {
     /** 指定应用是否启用（仅按应用开关；总开关由调用方一并判定）。缺省启用。 */
     fun appEnabledFor(packageName: String): Boolean = appEnabled[packageName] ?: true
+
+    /** 样式页"还原默认"：仅把样式页可调的参数恢复为 [DEFAULT]（边距/间隙/栏高/模糊/
+     *  表面色/饱和度/折射量/折射高度/文字标签），保留开关、内容延伸、按应用开关等
+     *  非样式字段。 */
+    fun withBarStyleDefaults(): ModuleConfig = copy(
+        barMarginDp = DEFAULT.barMarginDp,
+        barBottomGapDp = DEFAULT.barBottomGapDp,
+        barHeightDp = DEFAULT.barHeightDp,
+        barBlurDp = DEFAULT.barBlurDp,
+        barSurfaceAlpha = DEFAULT.barSurfaceAlpha,
+        barSaturation = DEFAULT.barSaturation,
+        barRefractionAmountScale = DEFAULT.barRefractionAmountScale,
+        barRefractionHeightScale = DEFAULT.barRefractionHeightScale,
+        barShowLabels = DEFAULT.barShowLabels,
+    )
     fun toJson(): String {
         val root = JSONObject()
         root.put("enabled", enabled)
@@ -61,7 +80,8 @@ data class ModuleConfig(
         root.put("barBlurDp", barBlurDp.toDouble())
         root.put("barSurfaceAlpha", barSurfaceAlpha.toDouble())
         root.put("barSaturation", barSaturation.toDouble())
-        root.put("barRefractionScale", barRefractionScale.toDouble())
+        root.put("barRefractionAmountScale", barRefractionAmountScale.toDouble())
+        root.put("barRefractionHeightScale", barRefractionHeightScale.toDouble())
         root.put("barShowLabels", barShowLabels)
         root.put("lightweightSampling", lightweightSampling)
         root.put("idleFrameSleep", idleFrameSleep)
@@ -92,13 +112,29 @@ data class ModuleConfig(
                     // 缺键回退必须与字段默认值一致：旧版本写入的配置没有该键，
                     // 回退 off 会让内容延伸 hook 永不安装（信息流停在小白条上方）
                     contentExtend = root.optString("contentExtend", CONTENT_EXTEND_SOURCE),
-                    barMarginDp = root.optDouble("barMarginDp", 16.0).toFloat(),
-                    barBottomGapDp = root.optDouble("barBottomGapDp", 0.0).toFloat(),
-                    barHeightDp = root.optDouble("barHeightDp", 64.0).toFloat(),
-                    barBlurDp = root.optDouble("barBlurDp", 8.0).toFloat(),
-                    barSurfaceAlpha = root.optDouble("barSurfaceAlpha", 0.4).toFloat(),
-                    barSaturation = root.optDouble("barSaturation", 1.5).toFloat(),
-                    barRefractionScale = root.optDouble("barRefractionScale", 1.0).toFloat(),
+                barMarginDp = root.optDouble("barMarginDp", 20.0).toFloat(),
+                barBottomGapDp = root.optDouble("barBottomGapDp", 0.0).toFloat(),
+                barHeightDp = root.optDouble("barHeightDp", 60.0).toFloat(),
+                barBlurDp = root.optDouble("barBlurDp", 6.0).toFloat(),
+                barSurfaceAlpha = root.optDouble("barSurfaceAlpha", 0.2).toFloat(),
+                barSaturation = root.optDouble("barSaturation", 1.5).toFloat(),
+                // 折射强度拆分迁移（一次性）：旧配置仅有 barRefractionScale 键时两项新键
+                // 同置旧值（两项同乘 v = 旧共享乘数行为逐位不变）；新配置缺键时各取自身
+                // 新默认（量 1.0 / 高度 0.35）。
+                barRefractionAmountScale = when {
+                    root.has("barRefractionAmountScale") ->
+                        root.optDouble("barRefractionAmountScale", 1.0).toFloat()
+                    root.has("barRefractionScale") ->
+                        root.optDouble("barRefractionScale", 1.0).toFloat()
+                    else -> 1f
+                },
+                barRefractionHeightScale = when {
+                    root.has("barRefractionHeightScale") ->
+                        root.optDouble("barRefractionHeightScale", 0.35).toFloat()
+                    root.has("barRefractionScale") ->
+                        root.optDouble("barRefractionScale", 1.0).toFloat()
+                    else -> 0.35f
+                },
                     barShowLabels = root.optBoolean("barShowLabels", true),
                     lightweightSampling = root.optBoolean("lightweightSampling", true),
                     idleFrameSleep = root.optBoolean("idleFrameSleep", true),

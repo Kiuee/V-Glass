@@ -66,7 +66,6 @@ import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.shapes.Capsule
-import com.moji.liquidglass.glass.components.REFRACTION_BOX_OVERDRAW_BELOW
 import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
 import com.moji.liquidglass.glass.components.LiquidBottomTab
@@ -90,8 +89,8 @@ import kotlin.math.tanh
  * 布局：ComposeView（WRAP_CONTENT、Gravity.BOTTOM）→ 根 Box 顶部 48dp 为辉光/液泡
  * 放大余量；玻璃栏底边内边距 = 应用真实导航栏 inset（navInsetProvider 三级回退）——
  * 玻璃栏抬升到小白条上方，下方条带透出全出血的信息流内容。
- * 底部语义（v3.2）：bottomGap=0 = 玻璃胶囊底边贴导航条顶——折射副本行下沿外扩
- * （REFRACTION_BOX_OVERDRAW_BELOW，alpha=0 视觉不可见）已从底部 padding 扣除。
+ * 底部语义（v3.2）：bottomGap=0 = 玻璃胶囊底边贴导航条顶——2.9.12 起副本行无节点
+ * 外扩（盒高 = 栏高），底部 padding 直接 = inset + gap。
  * 二楼下拉位移经 GlassBarState 驱动 graphicsLayer 跟随，与原软件行为一致。
  *
  * 多目标：渲染由 GlassBarSpec（适配器提取）驱动——
@@ -112,6 +111,17 @@ fun GlassRoot(
     val tick = remember { mutableIntStateOf(0) }
     // tick 门控时间戳（帧循环低频档/深度静止档的间隔基准，主线程）
     val tickGate = remember { LongArray(1) }
+    // 样式（模块设置页可调，hook 层同步到 GlassInstaller，帧循环检测变化驱动重组）
+    var style by remember { mutableStateOf(GlassInstaller.glassStyle) }
+    // 采样外扩（px）= max(模糊半径, 折射量上限 24dp×量倍数)：blur() 把效果层 padding 抬到
+    // 模糊半径、lens() 抬到折射量——外扩环必须有真实内容，否则 blur/lens 在玻璃边缘
+    // 采样命中透明（模糊半径越大边缘淡出环越宽、折射外向位移取空）。逐帧读当前样式，
+    // 样式热改自动跟随（条带几何随之变化触发重录）。
+    val clipOutsetPx = {
+        with(density) {
+            maxOf(style.blurRadiusDp.dp.toPx(), (24f * style.refractionAmountScale).dp.toPx())
+        }
+    }
     val backdrop = remember(appRoot, session) {
         ClippedViewBackdrop(
             view = appRoot,
@@ -121,6 +131,9 @@ fun GlassRoot(
                 appRoot.getLocationOnScreen(out)
                 Offset(out[0].toFloat(), out[1].toFloat())
             },
+            // 2.9.7 曾在此强制关闭条带去重做诊断（验证"模糊范围上移/栏体下半模糊消失"
+            // 是否与去重相关）——证伪：根因 = 采样源越出内容视图底边无真实像素（§1.2
+            // 采样条带越界镜像扩展），恢复配置化默认。
             dedupe = { session.dedupeBackdropSampling },
             liveNodeSampling = { session.backdropLiveNodeSampling },
             freeze = { session.backdropFreezeGate?.invoke() ?: false },
@@ -129,15 +142,18 @@ fun GlassRoot(
                 if (flag) session.backdropForceRecord = false
                 flag
             },
+            clipOutset = clipOutsetPx,
+            // dedupe 共享条带纵向联合外扩（仅去重开启时生效；机理见 ClippedViewBackdrop
+            // bandExtraExtent KDoc）：条带按首个绘制消费者（主层）几何录制一次，模糊拉满
+            // 时液泡悬停采样范围超出主层条带——联合外扩使共享条带覆盖最大消费者，内容
+            // 坐标系锚定使多录无害。
+            bandExtraExtent = { if (session.dedupeBackdropSampling) clipOutsetPx() else 0f },
             log = { session.logger?.invoke(it) },
         )
     }
 
     // 底部 inset：优先应用侧真实值（navInsetProvider），不可用时回退 Compose insets
     var bottomInset by remember { mutableIntStateOf(-1) }
-
-    // 样式（模块设置页可调，hook 层同步到 GlassInstaller，帧循环检测变化驱动重组）
-    var style by remember { mutableStateOf(GlassInstaller.glassStyle) }
 
     var selectedIndex by remember { mutableIntStateOf(spec.initialIndex) }
     // 底栏显隐跟随原生页面：false = 应用声明当前页不显示底栏（如大图详情页二级界面）
@@ -435,12 +451,9 @@ fun GlassRoot(
             .align(Alignment.BottomCenter)
             .padding(
                 bottom = with(density) {
-                    // 底部语义（v3.2 定案）：bottomGap=0 = 玻璃胶囊底边贴导航条顶（inset
-                    // 上沿）。LiquidBottomTabs 外层盒比栏高多出折射行下沿外扩（alpha=0
-                    // 视觉不可见，REFRACTION_BOX_OVERDRAW_BELOW），此处扣除还原语义；
-                    // inset+gap 不足该值时收敛 0（负 padding 非法，玻璃最低贴内容底）。
-                    (effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp -
-                        REFRACTION_BOX_OVERDRAW_BELOW).coerceAtLeast(0.dp)
+                    // 底部语义（v3.2）：bottomGap=0 = 玻璃胶囊底边贴导航条顶（inset 上沿）。
+                    // 2.9.12 起副本行无节点外扩（盒高 = 栏高），padding 直接 = inset + gap。
+                    effectiveInset.coerceAtLeast(0).toDp() + style.bottomGapDp.dp
                 }
             )
                     .graphicsLayer {
@@ -482,7 +495,8 @@ fun GlassRoot(
                     blurRadius = style.blurRadiusDp.dp,
                     surfaceAlpha = style.surfaceAlpha,
                     saturation = style.saturation,
-                    refractionScale = style.refractionScale,
+                    refractionAmountScale = style.refractionAmountScale,
+                    refractionHeightScale = style.refractionHeightScale,
                     accentColor = specColors.second,
                     onPreviewTabChanged = {
                         session.previewTabChange(it)
@@ -782,8 +796,8 @@ private fun ExtraActionButton(
                     colorControls(saturation = style.saturation)
                     blur(style.blurRadiusDp.dp.toPx())
                     lens(
-                        24f.dp.toPx() * style.refractionScale,
-                        24f.dp.toPx() * style.refractionScale,
+                        24f.dp.toPx() * style.refractionHeightScale,
+                        24f.dp.toPx() * style.refractionAmountScale,
                     )
                 },
                 // LiquidButton layerBlock 逐字移植：按压缩放（4dp/高）+ tanh 跟随平移
@@ -901,8 +915,8 @@ private fun AuxGlassPill(
                     colorControls(saturation = style.saturation)
                     blur(style.blurRadiusDp.dp.toPx())
                     lens(
-                        24f.dp.toPx() * style.refractionScale,
-                        24f.dp.toPx() * style.refractionScale,
+                        24f.dp.toPx() * style.refractionHeightScale,
+                        24f.dp.toPx() * style.refractionAmountScale,
                     )
                 },
                 onDrawSurface = { drawRect(containerColor) }
