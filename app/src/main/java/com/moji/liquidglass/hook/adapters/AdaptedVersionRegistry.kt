@@ -23,11 +23,12 @@ object AdaptedVersionRegistry {
 
         "com.vivo.gallery" to listOf("10.2.9.2"),
         "com.sina.weibo" to listOf("16.10.1","16.10.2","16.10.3"),
-        "com.xingin.xhs" to listOf("9.51.0"),
+        "com.xingin.xhs" to listOf("9.51.0","9.53.0"),
         "com.autonavi.minimap" to listOf("17.02.0.2010"),
         "com.eg.android.AlipayGphone" to listOf("12.12.36.7600"),
         "com.hunantv.imgo.activity" to listOf("9.4.7"),
         "com.max.xiaoheihe" to listOf("1.3.400"),
+        "com.vivo.health" to listOf("7.1.3.14"),
 
     )
 }

@@ -919,6 +919,11 @@ private fun AuxGlassPill(
                         24f.dp.toPx() * style.refractionAmountScale,
                     )
                 },
+                // 关闭库默认外投影（Shadow.Default：24dp、黑 10%，独立于形状裁剪的绘制
+                // 层）——阴影外溢 overlay 条带即被窗口画布硬裁出边界；胶囊位置随原生视图
+                // 任意、不贴屏底（与底栏不同，底栏向下溢出本就被屏边裁掉、向上落在 48dp
+                // 辉光余量内，保留默认）。Highlight 为形状内描边不外溢，保持默认。
+                shadow = { null },
                 onDrawSurface = { drawRect(containerColor) }
             )
     ) {

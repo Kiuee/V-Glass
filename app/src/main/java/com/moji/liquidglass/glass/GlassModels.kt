@@ -141,8 +141,9 @@ class GlassSession(
     @Volatile
     var onAuxGlassRestore: (() -> Unit)? = null
 
-    /** 辅助玻璃形状钩子（默认 null = 胶囊 Capsule）：按视图声明玻璃底形状（如
-     *  文件管理存储条用圆角矩形更贴近原生形态）。 */
+    /** 辅助玻璃形状钩子（默认 null = 胶囊 Capsule，与玻璃底栏同款）：按视图声明
+     *  玻璃底形状的备用通道（当前无应用使用——文件管理存储条曾声明圆角矩形，
+     *  2.9.17 起回退默认胶囊）。 */
     @Volatile
     var auxGlassShape: ((View) -> androidx.compose.ui.graphics.Shape)? = null
 

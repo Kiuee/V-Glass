@@ -6,8 +6,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.unit.dp
 import com.moji.liquidglass.config.ModuleConfig
 import com.moji.liquidglass.glass.GlassSession
 import com.moji.liquidglass.glass.IconMode
@@ -91,12 +89,28 @@ object FileManagerAdapter : AppAdapter {
     private var spaceOriginalAlpha = 1f
     private var spaceOriginalBackground: Drawable? = null
     private var spaceOriginalWidth = ViewGroup.LayoutParams.MATCH_PARENT
+    private var spaceOriginalHeight = ViewGroup.LayoutParams.MATCH_PARENT
+    private var spaceOriginalMinHeight = 0
     private var spaceOriginalGravity = -1
     private var spaceOriginalPaddingL = 0
     private var spaceOriginalPaddingR = 0
+    private var spaceOriginalPaddingT = 0
+    private var spaceOriginalPaddingB = 0
+    private var spaceOriginalMarginL = 0
+    private var spaceOriginalMarginR = 0
 
-    /** 玻璃底加宽量（每侧 dp）：减小玻璃底距屏幕两侧的距离（用户观感调整项）。 */
-    private const val AUX_EXTRA_HORIZONTAL_DP = 24f
+    /** 玻璃底左右外边距（每侧 dp）：存储条内容（进度条等全宽元素）固有宽度接近满屏，
+     *  wrap_content 收不回来、调 padding 无效——宽度保持原生 match_parent，用 margin
+     *  限制胶囊宽度，胶囊不再顶屏幕边缘（用户观感调整项，2.9.19；与玻璃底栏最小安全
+     *  边距 minHorizontalMarginDp 默认 20dp 同源，观感和谐）。内部进度条随之略窄，
+     *  图标/文字大小不变。 */
+    private const val AUX_SIDE_MARGIN_DP = 20f
+    /** 玻璃底纵向收拢后每侧保留的垂直内边距（dp）：不清零——内容距胶囊弧形端部保留
+     *  呼吸感（接近底栏"栏高 60dp / 内容行 52dp"的比例观感）。收拢目的 = 胶囊高度进入
+     *  玻璃 overlay 顶部余量（GlassRoot 内层盒 48dp）之内，越界被 overlay 上缘裁切
+     *  （"上半部分显示不全"）的整类问题消失；内容大小完全不动。 */
+    private const val AUX_KEEP_VERTICAL_DP = 6f
+
     @Volatile private var spaceSituationId = 0
 
     private fun isBottomBar(v: View): Boolean =
@@ -315,8 +329,6 @@ object FileManagerAdapter : AppAdapter {
         session.previewIconSwapper = { index, checked ->
             swapPreviewIcon(session, index, checked)
         }
-        // 玻璃底形状：圆角矩形（16dp）更贴近原生存储条形态（默认胶囊全圆角过于浑圆）
-        session.auxGlassShape = { androidx.compose.foundation.shape.RoundedCornerShape(16.dp) }
         // 可见性门控顺带逐帧重申装饰隐藏（防应用/theme 路径翻回可见性；两次可见性
         // 比较的开销可忽略）
         session.mirrorVisibleGate = {
@@ -467,31 +479,53 @@ object FileManagerAdapter : AppAdapter {
      *    画进玻璃胶囊；
      *  - alpha=0：原生内容隐藏但布局占位与点击保留（alpha 不影响输入，"清理"入口照常；
      *    `View.draw()` 手动调用不施加 alpha，引擎镜像仍取到完整内容，无鬼影）；
-     *  - 宽度 match_parent → wrap_content + 水平居中：玻璃底包裹内容（用户要求的观感），
-     *    并额外加对称水平 padding（[AUX_EXTRA_HORIZONTAL_DP]，减小玻璃底距屏幕两侧的
-     *    距离、内容保持居中），原 padding 记录供还原。 */
+     *  - 左右收拢：宽度保持原生 match_parent，加对称左右 margin（[AUX_SIDE_MARGIN_DP]，
+     *    原值记录供还原）——存储条内容固有宽度接近满屏，wrap_content 收不回来、调
+     *    padding 无效，用 margin 限宽胶囊才不顶屏幕边缘（内容居中不变，进度条略窄）；
+     *  - 纵向收拢：上下 padding 收拢到 [AUX_KEEP_VERTICAL_DP]（不清零、不放大原值）+
+     *    固定高度 → wrap_content + minimumHeight 置 0 + 垂直居中（原值全部记录供还原）
+     *    ——玻璃胶囊 1:1 镜像视图边界，收拢后胶囊高度进入玻璃 overlay 顶部余量（48dp）
+     *    之内，越界被 overlay 上缘裁切（"上半部分显示不全"）的整类问题消失；内容
+     *    （图标/文字）大小完全不动。 */
     private fun suppressSpaceView(view: View) {
         if (spaceSuppressedFor === view) return
         spaceSuppressedFor = view
         spaceOriginalAlpha = view.alpha
         spaceOriginalBackground = view.background
         spaceOriginalWidth = view.layoutParams?.width ?: ViewGroup.LayoutParams.MATCH_PARENT
+        spaceOriginalHeight = view.layoutParams?.height ?: ViewGroup.LayoutParams.MATCH_PARENT
+        spaceOriginalMinHeight = view.minimumHeight
         spaceOriginalGravity = (view.layoutParams as? LinearLayout.LayoutParams)?.gravity ?: -1
         spaceOriginalPaddingL = view.paddingLeft
         spaceOriginalPaddingR = view.paddingRight
+        spaceOriginalPaddingT = view.paddingTop
+        spaceOriginalPaddingB = view.paddingBottom
+        (view.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+            spaceOriginalMarginL = it.leftMargin
+            spaceOriginalMarginR = it.rightMargin
+        }
         view.background = null
         view.alpha = 0f
         view.layoutParams?.let { lp ->
-            lp.width = ViewGroup.LayoutParams.WRAP_CONTENT
-            (lp as? LinearLayout.LayoutParams)?.let { it.gravity = Gravity.CENTER_HORIZONTAL }
+            if (lp.height > 0) lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+            (lp as? ViewGroup.MarginLayoutParams)?.let {
+                val sidePx = (AUX_SIDE_MARGIN_DP * view.resources.displayMetrics.density).toInt()
+                it.leftMargin = sidePx
+                it.rightMargin = sidePx
+            }
+            (lp as? LinearLayout.LayoutParams)?.let {
+                it.gravity = (spaceOriginalGravity.takeIf { g -> g >= 0 }
+                    ?: Gravity.CENTER_HORIZONTAL) or Gravity.CENTER_VERTICAL
+            }
             view.layoutParams = lp
         }
-        val extraPx = (AUX_EXTRA_HORIZONTAL_DP * view.resources.displayMetrics.density).toInt()
+        view.minimumHeight = 0
+        val keepVPx = (AUX_KEEP_VERTICAL_DP * view.resources.displayMetrics.density).toInt()
         view.setPadding(
-            spaceOriginalPaddingL + extraPx,
-            view.paddingTop,
-            spaceOriginalPaddingR + extraPx,
-            view.paddingBottom,
+            spaceOriginalPaddingL,
+            minOf(spaceOriginalPaddingT, keepVPx),
+            spaceOriginalPaddingR,
+            minOf(spaceOriginalPaddingB, keepVPx),
         )
     }
 
@@ -553,12 +587,23 @@ object FileManagerAdapter : AppAdapter {
             spaceOriginalBackground?.let { v.background = it }
             v.layoutParams?.let { lp ->
                 lp.width = spaceOriginalWidth
+                lp.height = spaceOriginalHeight
+                (lp as? ViewGroup.MarginLayoutParams)?.let {
+                    it.leftMargin = spaceOriginalMarginL
+                    it.rightMargin = spaceOriginalMarginR
+                }
                 if (spaceOriginalGravity >= 0) {
                     (lp as? LinearLayout.LayoutParams)?.gravity = spaceOriginalGravity
                 }
                 v.layoutParams = lp
             }
-            v.setPadding(spaceOriginalPaddingL, v.paddingTop, spaceOriginalPaddingR, v.paddingBottom)
+            v.minimumHeight = spaceOriginalMinHeight
+            v.setPadding(
+                spaceOriginalPaddingL,
+                spaceOriginalPaddingT,
+                spaceOriginalPaddingR,
+                spaceOriginalPaddingB,
+            )
         }
         spaceSuppressedFor = null
         spaceViewRef = null
