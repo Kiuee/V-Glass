@@ -29,6 +29,7 @@ object AdaptedVersionRegistry {
         "com.hunantv.imgo.activity" to listOf("9.4.7"),
         "com.max.xiaoheihe" to listOf("1.3.400"),
         "com.vivo.health" to listOf("7.1.3.14"),
+        "com.bbk.appstore" to listOf("10.5.41.0"),
 
     )
 }
