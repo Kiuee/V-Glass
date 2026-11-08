@@ -133,7 +133,7 @@ fun GlassRoot(
             },
             // 2.9.7 曾在此强制关闭条带去重做诊断（验证"模糊范围上移/栏体下半模糊消失"
             // 是否与去重相关）——证伪：根因 = 采样源越出内容视图底边无真实像素（§1.2
-            // 采样条带越界镜像扩展），恢复配置化默认。
+            // 采样条带越界镜像扩展，该镜像后于 2026-11-08 整体移除），恢复配置化默认。
             dedupe = { session.dedupeBackdropSampling },
             liveNodeSampling = { session.backdropLiveNodeSampling },
             freeze = { session.backdropFreezeGate?.invoke() ?: false },
@@ -149,6 +149,7 @@ fun GlassRoot(
             // 坐标系锚定使多录无害。
             bandExtraExtent = { if (session.dedupeBackdropSampling) clipOutsetPx() else 0f },
             log = { session.logger?.invoke(it) },
+            samplingDisabled = { session.backdropSamplingDisabled },
         )
     }
 
@@ -156,6 +157,14 @@ fun GlassRoot(
     var bottomInset by remember { mutableIntStateOf(-1) }
 
     var selectedIndex by remember { mutableIntStateOf(spec.initialIndex) }
+    // 转发挂起标记：点击（LiquidBottomTab.onClick）与拖动松手提交（onTabSelected）各自
+    // 转发 performClick 后记录目标下标+时点，门控两处——①帧循环的原生读数重申（挂起期间
+    // 跳过，否则下一 tick 液泡被拉回原 tab，应用切页链（高德 200ms 双击判定+过渡）落定后
+    // 才回摆，即"点击/松手后弹回 ~0.5s"）；②onTabSelected 的拖动守卫（点击路径弹簧 settle
+    // 内原生未翻转，不跳过会对同一次点击二次 performClick，落入高德双击判定窗口）。窗口
+    // 1500ms 覆盖弹簧 settle 最坏时长；窗口内索引不同的转发/应用驱动切换不受影响。
+    val tapForwardedIndex = remember { mutableIntStateOf(-1) }
+    val tapForwardedAtMs = remember { mutableStateOf(0L) }
     // 底栏显隐跟随原生页面：false = 应用声明当前页不显示底栏（如大图详情页二级界面）
     var barWanted by remember { mutableStateOf(true) }
     // 辅助玻璃视图边界（auxGlassViews 声明式通道，帧循环逐 tick 读取；仅变化时写入
@@ -376,7 +385,18 @@ fun GlassRoot(
             }
             val appSelected = session.selectedTabIndex()
             if (appSelected >= 0 && appSelected != selectedIndex) {
-                selectedIndex = appSelected
+                // 原生读数重申（应用驱动切页跟随）。点击转发挂起期间跳过：玻璃点击后原生
+                // 选中态要等应用切页链路（200ms 双击判定 + 转场 + setSelectItem）才翻转，
+                // 期间每 tick 重申会把液泡拉回原 tab（真机高德 17.02 实证"点击后弹回、
+                // ~0.5s 后再切"，异步切页应用可见、同步翻转应用窗口为零不可见）。应用在
+                // 挂起窗口内自行切到其他 tab（≠点击目标）仍尊重应用读数。
+                val tapPending = selectedIndex == tapForwardedIndex.intValue &&
+                    android.os.SystemClock.elapsedRealtime() - tapForwardedAtMs.value <
+                    TAP_FORWARD_SUPPRESS_MS &&
+                    appSelected != tapForwardedIndex.intValue
+                if (!tapPending) {
+                    selectedIndex = appSelected
+                }
             }
         }
     }
@@ -483,11 +503,25 @@ fun GlassRoot(
                     onTabSelected = { index ->
                         // 拖动指示器路径：确定性转发——仅当应用尚未处于目标页时点击原 TabView。
                         // 应用驱动的同步变更（selectedIndex 已等于该页）天然不转发，无竞态。
-                        if (session.selectedTabIndex() != index) {
+                        // 点击路径（LiquidBottomTab.onClick）已同步转发过一次，弹簧动画 settle
+                        // 内的本次回调用不二次转发（详见 tapForwardedIndex 声明处注释）。
+                        val isTapEcho = index == tapForwardedIndex.intValue &&
+                            android.os.SystemClock.elapsedRealtime() - tapForwardedAtMs.value <
+                            TAP_FORWARD_SUPPRESS_MS
+                        if (!isTapEcho && session.selectedTabIndex() != index) {
                             session.onTabClicked(index)
-                            // 点击转发改动底栏原生视图：开满帧率窗口保即时刷新
-                            session.armActivityWindow()
+                            // 拖动松手提交：记录转发挂起标记（帧循环重申据此跳过原生旧读数，
+                            // 见 tapForwardedIndex 声明处注释）
+                            tapForwardedIndex.intValue = index
+                            tapForwardedAtMs.value = android.os.SystemClock.elapsedRealtime()
                         }
+                        // 提交目标读数回写：拖动路径 GlassRoot.selectedIndex 仍停在原 tab（拖动
+                        // 气泡由 LiquidBottomTabs 内部 currentIndex 驱动），不回写则重申把气泡
+                        // 拉回原 tab、应用切页落定后二次回摆（真机高德"松手变回未选中 ~0.5s"）。
+                        // 点击路径 onClick 已写同值；应用驱动同步（走不到转发）此写 = 同值 no-op。
+                        selectedIndex = index
+                        // 点击转发改动底栏原生视图：开满帧率窗口保即时刷新
+                        session.armActivityWindow()
                     },
                     backdrop = backdrop,
                     tabsCount = spec.tabs.size,
@@ -554,6 +588,10 @@ fun GlassRoot(
                                 },
                                 onClick = {
                                 selectedIndex = index
+                                // 记录点击转发标记：onTabSelected 的拖动守卫据此跳过本次点击的
+                                // 二次转发（详见 tapForwardedIndex 声明处注释）
+                                tapForwardedIndex.intValue = index
+                                tapForwardedAtMs.value = android.os.SystemClock.elapsedRealtime()
                                 session.onTabClicked(index)
                                 session.armActivityWindow()
                             }) {
@@ -943,6 +981,11 @@ private const val STATIC_TICK_INTERVAL_NS = 33_333_333L
 /** 原生压制重申 + 补色延迟补取的时间门（原 120 帧窗口帧计数驱动，深度静止档帧不
  *  流动会饿死；改时间门控——泵帧期与原 1~2s 同量级，睡眠期 1Hz 心跳同样触发）。 */
 private const val REASSERT_INTERVAL_NS = 2_000_000_000L
+
+/** 点击路径转发标记的有效窗口：覆盖液泡弹簧动画 settle 的最坏时长（弹簧阈值 0.001f，
+ *  跨 3~4 tab 距离 settle 可达 ~1s）。窗口外同索引的 onTabSelected 回调（理论不存在，
+ *  除非原生选中态被应用回滚）恢复拖动守卫转发语义。 */
+private const val TAP_FORWARD_SUPPRESS_MS = 1500L
 
 /**
  * 商店 tab 图标逐帧镜像 Painter：每帧经 [viewProvider] 解析当前应镜像的视图

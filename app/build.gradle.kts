@@ -13,8 +13,8 @@ android {
         applicationId = "com.moji.liquidglass"
         minSdk = 26
         targetSdk = 37
-        versionCode = 48
-        versionName = "2.9.19"
+        versionCode = 59
+        versionName = "2.9.30"
     }
 
     buildTypes {

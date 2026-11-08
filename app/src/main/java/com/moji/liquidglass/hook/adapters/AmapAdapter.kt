@@ -84,7 +84,9 @@ import java.lang.reflect.Method
  *   液泡成为唯一选中指示）。
  *   应用侧写入逻辑不修改；条目重附着场景由视图树重建 → isStale 重装路径自然覆盖。
  * - 帧驱动：保持默认每帧 tick（地图 TextureView 的 GL 帧更新不触发 View.invalidate，
- *   事件驱动会冻结玻璃）；采样去重按全局配置（GL 内容采样昂贵，3 次/帧 → 1 次/帧）。
+ *   事件驱动会冻结玻璃）；采样去重/实时显示列表采样照常，折射完整保留。条带边界镜像
+ *   已引擎级移除（2026-11-08：镜像翻转回放与地图引擎渲染冲突致死 = 整页黑屏，见
+ *   onSessionCreated 注释与 №05.7 教训 9）；blur 6dp 下移除无视觉代价。
  * - 已知几何差异：原生胶囊底距屏底 inset+16dp（悬浮设计），玻璃胶囊贴 inset——16dp
  *   悬浮间隙不动全局样式单源，观感可用设置页 barBottomGapDp 调整（§6.7 已知限制）。
  */
@@ -105,8 +107,12 @@ object AmapAdapter : AppAdapter {
         iconMode = IconMode.WHOLE_TAB_FULL,
         fallbackProbe = true,
         // 条目反射通道（setTabSelected(Z)）只翻字段不渲染，预览走 applier 直控：
-        // LiteTabBar.setSelectItem(re6, false) 全量纯视觉重设（见类 KDoc）
+        // LiteTabBar.setSelectItem(re6, false) 全量纯视觉重设（见类 KDoc）。
+        // applier 全量重设型：悬停态 = "目标选中、其余取消" 与应用最终选中态一致——
+        // 松手提交跳过引擎预览收口回退（收口会把悬停态翻回原 tab，应用切页链 ~235ms
+        // 落定才翻回，2026-11-08 落盘日志实证），见 descriptor.skipPreviewRestoreOnSubmit
         itemCheckedApplier = { view, checked -> applyChecked(view, checked) },
+        skipPreviewRestoreOnSubmit = true,
         // 条目自带选中态配色（token 驱动图标/文字/焦点背景），折射染色会盖掉
         tintRefractionContent = false,
     )
@@ -339,7 +345,9 @@ object AmapAdapter : AppAdapter {
             bar.isShown && bar.translationY < bar.height * 0.5f
         }
         // 采样去重：地图为 GL（TextureView）内容，采样即触发 GL 绘制——由 TargetHook
-        // 会话创建期统一设置（引擎单管线，默认开；远程配置 lightweightSampling 可关）
+        // 会话创建期统一设置（引擎单管线，默认开；远程配置 lightweightSampling 可关）。
+        // 条带边界镜像已引擎级移除（2026-11-08，曾与地图引擎渲染冲突致死，见 №05.7
+        // 教训 9 与 ClippedViewBackdrop 类 KDoc 历史注记），本适配无需任何采样豁免声明。
         neutralizeItemDecorations(session, facade)
     }
 

@@ -54,6 +54,16 @@ data class TabBarDescriptor(
      *  要求与反射路径同语义：纯视觉翻转、无切页等副作用（副作用应用见
      *  GlassSession.isTabPreviewActive 吞咽机制）。 */
     val itemCheckedApplier: ((view: View, checked: Boolean) -> Unit)? = null,
+    /** 拖动松手提交时跳过预览收口回退（默认 false = 既有应用逐位不变，§0.4 红线）。
+     *  收口（onTabClicked 内 setTabChecked(index,false)+setTabChecked(origin,true)）为
+     *  "切页信号 = checked 变化"的应用还原真实转换而生；**applier 全量重设型**适配器
+     *  （高德：applier = setSelectItem(re6,false) 全量重设，悬停即"目标选中、其余取消"）
+     *  的悬停态与应用最终选中态本就一致（悬停目标 = 点击目标），收口反而把悬停态翻回
+     *  原 tab，等应用切页链（200ms 双击判定 + 过渡 + setSelectItem）完成才翻回——表现
+     *  为"松手后悬停 tab 变回未选中、原 tab 保持选中 ~0.5s"（2026-11-08 真机日志实证：
+     *  每次转发前 1-3ms 有收口 bridge 对，真翻转在 ~235ms 后）。声明 true 跳过收口，
+     *  悬停视觉原样保留到应用切页落定。 */
+    val skipPreviewRestoreOnSubmit: Boolean = false,
     /** 液泡折射副本是否整层强调色染色（默认 true：选中/悬停 tab 在液泡内呈强调色）。
      *  图标素材含"白=底色"编码的应用（如 vivo 官网）必须关闭：染色会把不透明白间隙
      *  一起染成强调色，图标在液泡内呈实心，且动画结束切到真透明间隙的静态图时产生

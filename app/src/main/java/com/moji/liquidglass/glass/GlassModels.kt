@@ -340,6 +340,14 @@ class GlassSession(
     @Volatile
     var logger: ((String) -> Unit)? = null
 
+    /** 内容采样停用（声明式通道，默认 false = 既有应用逐位不变）。true = 条带不录制/
+     *  不回放/不直绘，玻璃节点只留表面色（特效层内容为空）。为"采样条带在 RenderEffect
+     *  特效链内回放含 native 消费 TextureView（地图引擎为生产者）的绘制算子 = 宿主 GL
+     *  渲染死亡"的应用声明——2026-11-08 高德真机二分定案：采样+特效同开 = 整页黑屏 +
+     *  液泡边缘黑色锯齿；任一单独停用 = 正常（两档真机各验证一次）。采样回放不进特效
+     *  层（特效关）或特效层不含 TextureLayer 算子（采样关）均无害。 */
+    var backdropSamplingDisabled: Boolean = false
+
     /** tab 转发后的取证回调（hook 层注入，如 padding dump）。在主线程调用。 */
     @Volatile
     var afterForward: (() -> Unit)? = null
@@ -365,7 +373,9 @@ class GlassSession(
         // TabHost 本就停在 origin），再放行 performClick 产生真实变化 → 应用正常切页。
         // 相册等无副作用应用：还原与后续应用自身的切换同栈完成、中间无绘制，无可见抖动。
         val previewing = wholeTabPreviewOrigin >= 0
-        if (previewing) {
+        // 收口回退：applier 全量重设型适配器（高德）声明 skipPreviewRestoreOnSubmit 时
+        // 跳过——悬停态与点击目标一致，收口反而把悬停态翻回原 tab（见 descriptor KDoc）
+        if (previewing && !extractor.descriptor.skipPreviewRestoreOnSubmit) {
             val origin = wholeTabPreviewOrigin
             if (index != origin) {
                 isTabPreviewActive = true

@@ -62,15 +62,13 @@ import com.kyant.backdrop.Backdrop
  * RenderNode（内容坐标系），各节点回放时按当次消费者的 viewPos/glassPos 对齐、用自己
  * 的条带矩形裁剪——与直绘逐像素等价，全树遍历 3 次/帧 → 1 次/帧。
  *
- * 采样源边界镜像（[extendBeyondContent]，录制期 clamp 等价）：blur 的高斯混合只看
- * 效果层纹理内的像素——栏体贴屏底时，效果层（节点 ±2×模糊半径外扩，折射副本行更是
- * ±2×模糊+14dp×量倍数）纵向越出内容视图底边，越界区没有任何真实像素可采样，模糊输出
- * 从 (内容底边 − 模糊半径) 起向下混入空像素淡出至透明。液泡按压缩放（1.39×）后的可见
- * 区下缘 + 边缘 lens 外向位移恰好采样这一段 → 悬停态选中胶囊下半透明（用户语"显示的
- * 区域是模糊区的下部分透明区域"）、拖动悬停中读作"模糊画面上移"（2.9.7 真机，模糊
- * 24dp 实证；默认 6dp 时淡出带起点在全部可见采样区之外故无感）。修复 = 录制期把内容
- * 视图底/顶边界外的条带空区用**边界翻转回放**填满（镜像源 = 条带内紧贴边界的真实内
- * 容）；镜像像素恒在屏幕外，只作 blur/lens 的采样源、从不直接可见。
+ * 采样源边界镜像（**已移除**，2026-11-08）：2.9.16 squash 曾引入 extendBeyondContent
+ * （录制期把内容视图底/顶边界外的条带空区用翻转回放填满，修贴屏底模糊淡出带，2.9.7
+ * 真机 24dp 实证场景）——真机未见对目标症状生效（液泡边缘透明真修复 = 液泡 effects
+ * 抬效果层采样环，§1.2），且镜像把含 native 消费 TextureLayer 的内容算子在特效层内
+ * **翻转回放 2 次**（执行 1→3 次），与高德地图引擎渲染冲突致死（整页黑屏，№05.7 教训
+ * 9）。整体移除回归单节点直录；默认 blur 6dp 下淡出带起点在全部可见采样区之外，
+ * 移除无视觉代价（大模糊档下缘淡出带回归，随样式档复验）。
  *
  * 实现要点（上次失败版的三处修正）：① 录制不含任何消费者的采样窗口（液泡随拖动平移，
  * 窗口各不相同，只有全宽条带能一次覆盖）；② 条带原点 = glassPos − viewPos（内容坐标系，
@@ -113,12 +111,16 @@ class ClippedViewBackdrop(
      *  开启时条带每 tick 只按"首个绘制消费者"（通常主层）的几何录制一次，其余消费者
      *  回放同一录制——模糊拉满时液泡悬停采样范围（±26dp 槽位半高 + 采样环 16dp + blur
      *  混合半径 24dp）超出主层条带，折射副本行回放得到的磨砂层边缘混入空纹理淡出带内
-     *  移（与 [extendBeyondContent] 同根因的"条带版本"）。调用方注入 = 采样外扩量
+     *  移（与已移除的采样源边界镜像同根因的"条带版本"）。调用方注入 = 采样外扩量
      *  （GlassRoot；仅 dedupe 开启时生效——各消费者自绘路径条带已自带自覆盖）；内容
      *  坐标系锚定使多录无害（回放按自身裁剪取用）。默认 { 0 } = 旧行为。 */
     private val bandExtraExtent: () -> Float = { 0f },
     /** 诊断日志出口（dedupe/冻结翻转/重录制时输出）。 */
     private val log: ((String) -> Unit)? = null,
+    /** 内容采样停用（声明式通道 `GlassSession.backdropSamplingDisabled` 注入）：true =
+     *  条带不录制/不回放/不直绘（渲染引擎侧：采样条带在特效层内回放 native 消费
+     *  TextureView 的绘制算子会杀死宿主 GL 渲染，见 GlassSession KDoc）。 */
+    private val samplingDisabled: () -> Boolean = { false },
 ) : Backdrop {
 
     override val isCoordinatesDependent: Boolean = true
@@ -127,11 +129,11 @@ class ClippedViewBackdrop(
     private val bandNode: android.graphics.RenderNode? =
         if (Build.VERSION.SDK_INT >= 29) android.graphics.RenderNode("glass-content-band") else null
 
-    /** 条带内容的原始录制（与 [bandNode] 同矩形、位置 (0,0)，无镜像）：[bandNode] =
-     *  src 回放 + 边界镜像合成——镜像需要回放已录制像素，单节点录制期内无法自引用。
-     *  两节点同守卫（API 29+），[bandNode] 非 null 时本节点必非 null。 */
-    private val srcNode: android.graphics.RenderNode? =
-        if (Build.VERSION.SDK_INT >= 29) android.graphics.RenderNode("glass-content-band-src") else null
+    /** 条带内容的原始录制（与 [bandNode] 同矩形、位置 (0,0)）：单节点直录（2.7.2 结构）。
+     *  历史注记：2.9.16 squash 曾引入 srcNode 双节点 + extendBeyondContent 边界镜像
+     *  （修贴屏底模糊淡出带，真机未见生效），且镜像把含 native 消费 TextureLayer 的
+     *  内容算子在特效层内翻转回放 2 次、与高德地图引擎渲染冲突致死（整页黑屏），
+     *  2026-11-08 整体移除（含声明式禁用通道）回归单节点结构。 */
     private var recordedTick = Int.MIN_VALUE
 
     /** 录制/回放异常后永久回退直绘（个别画布实现不支持回放嵌套显示列表）。 */
@@ -194,6 +196,9 @@ class ClippedViewBackdrop(
     ) {
         val tickValue = tick()
         val coordinates = coordinates ?: return
+        // 内容采样停用（声明式通道）：条带不录制、不回放、不直绘，玻璃节点只留
+        // 表面色/特效（效果层内容为空）
+        if (samplingDisabled()) return
         val node = bandNode
         // layerBlock 逆缩放读数：玻璃 layer 的正向缩放（layerBlock，如液泡按压 1.39×+
         // 速度拉伸）会缩放整块效果输出——采样若不施加其逆，泡内内容随玻璃缩放/偏移，
@@ -302,10 +307,9 @@ class ClippedViewBackdrop(
      *  [liveContent] 非 null 时不再 `view.draw()` 重编码内容树，改为引用内容视图自身
      *  已录制的 RenderNode（回放时由 RenderThread 栅格化并裁到条带）。
      *
-     *  双节点合成：内容先录进 [srcNode]（同矩形、位置 (0,0)），再合成进 [node] =
-     *  base 回放 + 边界镜像扩展（[extendBeyondContent]）——镜像要回放已录制像素，
-     *  单节点录制期内无法自引用。每 tick 仍只有一次内容树遍历（`view.draw` 或 live
-     *  引用），合成增量 = 2~3 次 RenderNode 回放，可忽略。 */
+     *  单节点直录（2.7.2 结构；历史上的 srcNode 双节点 + 边界镜像合成已整体移除，
+     *  见类 KDoc"采样源边界镜像"历史注记）。每 tick 仍只有一次内容树遍历（`view.draw`
+     *  或 live 引用）。 */
     private fun DrawScope.recordBand(
         node: android.graphics.RenderNode,
         coordinates: LayoutCoordinates,
@@ -321,25 +325,8 @@ class ClippedViewBackdrop(
         val canvas = node.beginRecording(bounds.width, bounds.height)
         try {
             canvas.clipRect(0f, 0f, bounds.width.toFloat(), bounds.height.toFloat())
-            val src = srcNode
-            if (src == null) {
-                // 理论不可达（本函数仅在 bandNode != null 即 API 29+ 时调用，srcNode
-                // 同守卫）；保守回退单节点直录（无边界镜像）。
-                canvas.translate(0f, -bounds.top.toFloat())
-                drawBandContent(canvas, liveContent)
-            } else {
-                src.setPosition(0, 0, bounds.width, bounds.height)
-                val srcCanvas = src.beginRecording(bounds.width, bounds.height)
-                try {
-                    srcCanvas.clipRect(0f, 0f, bounds.width.toFloat(), bounds.height.toFloat())
-                    srcCanvas.translate(0f, -bounds.top.toFloat())
-                    drawBandContent(srcCanvas, liveContent)
-                } finally {
-                    src.endRecording()
-                }
-                canvas.drawRenderNode(src)
-                extendBeyondContent(canvas, src, bounds)
-            }
+            canvas.translate(0f, -bounds.top.toFloat())
+            drawBandContent(canvas, liveContent)
         } finally {
             node.endRecording()
         }
@@ -364,41 +351,6 @@ class ClippedViewBackdrop(
             canvas.drawRenderNode(liveContent)
         } else {
             GlassSession.withSignalSuppression { view.draw(canvas) }
-        }
-    }
-
-    /**
-     * 条带越界镜像扩展（TileMode.Clamp 的录制期等价物）：内容视图边界外的条带空区用
-     * **边界翻转回放**填满。镜像机理与可见性边界见类 KDoc"采样源边界镜像"。几何：
-     * [canvas] 为 [bandNode] 的录制画布（节点本地坐标，内容点 (x,y) → (x, y−bandTop)），
-     * [src] 以同一矩形录制、位置 (0,0)（src 像素 y = 内容 y − bandTop）。底边 pivot =
-     * 内容 view.height 的节点本地 y（view.height − bandTop），翻转后源行 (view.height − d)
-     * 精确映射到填充行 (view.height + d)；顶边对称（辅助玻璃胶囊可能贴近屏幕顶缘）。
-     * 转角区（越底界 × 越左右界）不填充：左右边不镜像（见类 KDoc），转角无可见消费者
-     * 采样到达，省嵌套镜像回放。
-     */
-    private fun extendBeyondContent(
-        canvas: android.graphics.Canvas,
-        src: android.graphics.RenderNode,
-        bounds: BandBounds,
-    ) {
-        val width = bounds.width.toFloat()
-        val height = bounds.height.toFloat()
-        val contentBottomY = (view.height - bounds.top).toFloat() // 内容底边的节点本地 y
-        if (contentBottomY < height) {
-            canvas.save()
-            canvas.clipRect(0f, contentBottomY, width, height)
-            canvas.scale(1f, -1f, 0f, contentBottomY)
-            canvas.drawRenderNode(src)
-            canvas.restore()
-        }
-        val contentTopY = -bounds.top.toFloat() // 内容顶边（y=0）的节点本地 y
-        if (contentTopY > 0f) {
-            canvas.save()
-            canvas.clipRect(0f, 0f, width, contentTopY)
-            canvas.scale(1f, -1f, 0f, contentTopY)
-            canvas.drawRenderNode(src)
-            canvas.restore()
         }
     }
 
@@ -553,9 +505,8 @@ class ClippedViewBackdrop(
         nc.scale(1f / layerScaleX, 1f / layerScaleY, pivotX, pivotY)
     }
 
-    /** 直绘路径（dedupe 关闭/回退）：与回放同款条带矩形裁剪 + 逆缩放 + 边界镜像（镜像
-     *  机理见 [extendBeyondContent]；此路径无预录制节点可回放，以翻转画布二次直绘内容
-     *  树实现——仅回退路径付出第二次遍历）。 */
+    /** 直绘路径（dedupe 关闭/回退）：与回放同款条带矩形裁剪 + 逆缩放（单次直绘；历史
+     *  上的翻转二次直绘边界镜像已随录制期镜像一并移除，见类 KDoc 历史注记）。 */
     private fun DrawScope.drawDirect(
         nc: Canvas,
         coordinates: LayoutCoordinates,
@@ -573,44 +524,8 @@ class ClippedViewBackdrop(
             nc.translate(viewPos.x - glassPos.x, viewPos.y - glassPos.y)
             // 玻璃发起的宿主树直绘：信号抑制（自激防护，同 recordBand）
             GlassSession.withSignalSuppression { view.draw(nc) }
-            val nodeHeight = coordinates.size.height.toFloat()
-            val pivotY = if (nodeHeight > 0f) nodeHeight / 2f else size.height / 2f
-            drawDirectBoundaryMirror(nc, pivotY, viewPos.y - glassPos.y, layerScaleY)
         } finally {
             nc.restoreToCount(saveCount)
-        }
-    }
-
-    /**
-     * 直绘路径的边界镜像（机理同 [extendBeyondContent]）：canvas 帧 = 内容坐标经逆缩放
-     * （算子序 = 逆缩放在前声明、对齐平移在后声明，内容 y → pivotY + (y + ty − pivotY)/
-     * layerScaleY，pivotY = 消费者节点中心，与 [applyInverseLayerScale] 同帧同轴）。
-     * 内容底边在该帧的 y = pivotY + (view.height + ty − pivotY)/layerScaleY，关于
-     * 它翻转画布后二次直绘：源行 (view.height − d) 精确映射到 (view.height + d)，恰好
-     * 覆盖 pivot 到裁剪底缘的空区（翻转严格画在 pivot 之下，与基绘制不重叠；已有
-     * clipBandRect 继续兜住外沿）。顶边对称（内容顶边在该帧的 y = pivotY +
-     * (ty − pivotY)/layerScaleY）。上游已校验 layerScaleY 有限且 > 0。
-     */
-    private fun DrawScope.drawDirectBoundaryMirror(
-        nc: Canvas,
-        pivotY: Float,
-        ty: Float,
-        layerScaleY: Float,
-    ) {
-        val margin = bandPerSideMargin()
-        val bottomPivot = pivotY + (view.height + ty - pivotY) / layerScaleY
-        if (bottomPivot < size.height + margin) {
-            nc.save()
-            nc.scale(1f, -1f, 0f, bottomPivot)
-            GlassSession.withSignalSuppression { view.draw(nc) }
-            nc.restore()
-        }
-        val topPivot = pivotY + (ty - pivotY) / layerScaleY
-        if (topPivot > -margin) {
-            nc.save()
-            nc.scale(1f, -1f, 0f, topPivot)
-            GlassSession.withSignalSuppression { view.draw(nc) }
-            nc.restore()
         }
     }
 }
