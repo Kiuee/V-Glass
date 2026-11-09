@@ -1,6 +1,7 @@
 package com.moji.liquidglass.glass
 
 import android.graphics.Canvas
+import android.graphics.Path
 import android.os.Build
 import android.os.SystemClock
 import android.view.View
@@ -464,12 +465,24 @@ class ClippedViewBackdrop(
     }
 
     /** 条带矩形裁剪（消费者本地坐标，四向 = 条带边距 = max(8dp, 采样外扩量)）。
-     *  **不再按胶囊裁剪**：内容在效果层外扩环内完整填充（胶囊裁剪边界内侧的模糊淡出带
-     *  整类消失），可见输出由库 layout 层（`placeWithLayer` clip=true + shape）遮罩回
-     *  节点形状——外扩采样已实证不外泄（clipOutset 24dp 无色带报告）。 */
+     *  裁剪实现 = **clipPath 非 scissor**（2026-11-09）：scissor 矩形裁剪使 bandNode
+     *  回放的 WebView 绘制算子（合成区域越出节点 bounds）触发 Chromium 闪屏——构建
+     *  二分矩阵定案（同量越界：圆形路径裁剪不闪 u3a/u3b；scissor 矩形必闪 t1/2.9.37）。
+     *  路径矩形带 0.01px 顶点偏移阻断 Skia 对轴对齐矩形路径的 scissor 简化（强制
+     *  stencil/遮罩裁剪路径），视觉不可感知。 */
     private fun DrawScope.clipBandRect(nc: Canvas) {
         val margin = bandPerSideMargin()
-        nc.clipRect(-margin, -margin, size.width + margin, size.height + margin)
+        // 0.01px 顶点偏移：阻断 Skia 对轴对齐矩形路径的 scissor 简化（强制 stencil
+        // 裁剪路径），视觉不可感知
+        val irregular = 0.01f
+        val bandPath = Path().apply {
+            moveTo(-margin, -margin + irregular)
+            lineTo(size.width + margin, -margin)
+            lineTo(size.width + margin, size.height + margin)
+            lineTo(-margin, size.height + margin)
+            close()
+        }
+        nc.clipPath(bandPath)
     }
 
     /** 条带每侧边距 = max(8dp, 采样外扩量)：8dp 兜底主层与副本/液泡条带的 4dp 垂直错位；
