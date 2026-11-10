@@ -604,14 +604,21 @@ class GlassSession(
             // 悬停回原 tab：预览保持激活，仅清悬停目标——边界抖动不反复挂载/恢复
             // （那会表现为"动画被反复触发"）；原 tab 恢复保存的原选中静态图（拖离时
             // 被反选换图/挂首帧过，悬停本就该呈选中落定外观，§0.5 A.1）；还原统一在
-            // 拖动结束的 endTabPreview() 做（LiquidBottomTabs onDragStopped 回原 tab）
+            // 拖动结束的 endTabPreview() 做（LiquidBottomTabs onDragStopped 回原 tab）。
+            // **原 tab 还原+复选必须收在"真实外出过"守卫内**（2.9.47 深色悬停闪烁修复）：
+            // 悬停原 tab 期间 wholeTabPreviewTarget 恒 -1，上方同目标去重永不命中，此分支
+            // 随每个 drag 事件重入——若无条件 restore+setChecked(origin,true)，对 vivo 选中
+            // 外观路径（setChecked 内部驱动选中外观/标签显隐，携带过渡动画）= 动画在推进
+            // 前逐事件重启，镜像读到反复归零的中间态 = 液泡下方（恰为光斑/整栏提亮覆盖区）
+            // 高频亮暗交替（深色读作"光斑/提亮闪烁"）。无外出经历时原 tab 本就处于选中
+            // 落定态，零写入即正确语义。
             if (wholeTabPreviewTarget >= 0) {
                 setTabChecked(wholeTabPreviewTarget, false)
                 restorePreviewFrame(wholeTabPreviewTarget)
                 wholeTabPreviewTarget = -1
+                restorePreviewFrame(origin)
+                setTabChecked(origin, true)
             }
-            restorePreviewFrame(origin)
-            setTabChecked(origin, true)
             return
         }
         val previous = wholeTabPreviewTarget
@@ -698,7 +705,16 @@ class GlassSession(
      *  显隐（内部调 setSelected），与应用自身切页同路径，无监听器副作用。best-effort。
      *  描述符声明了 itemCheckedApplier 时（条目选中外观由"数据模型 + setData 重渲染"
      *  驱动、视图上无 void(boolean) 翻转方法，如高德地图）走直控通道。翻转后调用
-     *  [previewIconSwapper]（图标随选中态换图的应用，如文件管理 discolor 双 drawable）。 */
+     *  [previewIconSwapper]（图标随选中态换图的应用，如文件管理 discolor 双 drawable）。
+     *
+     *  **反射通道同态去重**（2.9.47 深色悬停闪烁修复）：条目 `isSelected` 已等于目标态
+     *  时跳过反射翻转——vivo 选中外观/标签过渡路径携带动画（多次真机实证：管家
+     *  "悬停时动画不断播放"、健康/闹钟 setChecked 末尾 x()/w() 启动 ~250ms 图标缩放
+     *  ValueAnimator），重复同态翻转 = 动画反复重启 = 镜像逐帧亮暗交替（深色下读作
+     *  光斑/提亮闪烁）；手机管家 `lastAppliedChecked` 同款先例。去重只跳反射翻转，
+     *  [previewIconSwapper] 照常调用（健康=幂等收敛/管家=内部去重/主题=同实例 setIcon
+     *  早退，均安全）。若某应用的 setter 不维护 isSelected，去重条件永假 = 天然退化
+     *  为现状，无回归面。applier 通道不动（应用自行保证幂等）。 */
     private fun setTabChecked(index: Int, checked: Boolean) {
         val view = tabViews.getOrNull(index) ?: return
         extractor.descriptor.itemCheckedApplier?.let { applier ->
@@ -708,8 +724,10 @@ class GlassSession(
             return
         }
         val method = wholeTabSetChecked ?: return
-        runCatching { method.invoke(view, checked) }
-            .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }
+        if (view.isSelected != checked) {
+            runCatching { method.invoke(view, checked) }
+                .onFailure { logger?.invoke("setChecked($index,$checked) failed: $it") }
+        }
         runCatching { previewIconSwapper?.invoke(index, checked) }
     }
 

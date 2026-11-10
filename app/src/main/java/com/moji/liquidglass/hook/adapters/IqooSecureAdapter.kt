@@ -205,6 +205,7 @@ object IqooSecureAdapter : AppAdapter {
         AppAdapter.applyTransparentNavigationBar(activity, config)
         // 换肤重放/未知路径把 alpha 写回 1 的纠错（帧循环恢复后由 mirrorVisibleGate 逐帧接管）
         barRef?.get()?.takeIf { it.isAttachedToWindow }?.let { if (it.alpha != 0f) it.alpha = 0f }
+        barRef?.get()?.let { neutralizeBarBlur(it) }
     }
 
     /** 早期压制兜底还原时限（未被会话认领时还原 alpha，防永久隐形）。 */
@@ -275,6 +276,9 @@ object IqooSecureAdapter : AppAdapter {
     ) {
         barRef = WeakReference(session.tabContainer)
         reassertBarDecorations(session.tabContainer)
+        // 底栏动态模糊层中性化（见 neutralizeBarBlur）：全局模糊开启时 VBlur 磨砂条绕过
+        // view alpha 直绘进窗口，越界翻转触发其重渲染 = 磨砂底亮度跳变（2.9.47 修复）
+        neutralizeBarBlur(session.tabContainer)
         // 早期压制认领（冷启动闪现修复，见 installAppHooks）：装配即由会话接管压制/还原
         earlySuppressed.remove(session.tabContainer)
         // 预览图标换图（拖动悬停）：引擎 setTabChecked 翻转 y() 后调用——悬停 tab 走底栏
@@ -290,7 +294,43 @@ object IqooSecureAdapter : AppAdapter {
             reassertSuppressions()
             true
         }
+        // 预览期采样冻结（2.9.47 滑动切换瞬间整栏提亮闪烁修复）：拖动悬停窗口内条带
+        // 一次性录制后纯回放——越界翻转触发的底栏重渲染（含全局模糊开启时 VBlur 动态
+        // 模糊层的重渲染，其绕过 view alpha 直绘进采样条带）不再进入磨砂底；预览结束
+        // 自动解冻恢复实时采样。
+        session.backdropFreezeGate = { session.isTabPreviewActive }
         session.onAuxGlassRestore = { restoreDecorations() }
+    }
+
+    private val blurNeutralized: MutableSet<View> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /** 底栏动态模糊层中性化（2.9.47 滑动切换瞬间"整栏提亮/光斑"闪烁修复）：originui
+     *  构造器尾在系统全局模糊开启时 setBlurEnable(true)——VBlur 磨砂条绕过 view alpha
+     *  直绘进应用窗口（真机 logcat 实证：HWUI BlurEffectManager 逐帧重绘），透过半透明
+     *  玻璃可见；越界翻转触发其重渲染 = 磨砂底亮度跳变（应用 B(true) 主动开启，№10.7
+     *  已登记风险）。反射调用公开 API setBlurEnable(false) 一次性关闭（内部同步置静态
+     *  开关，setCardStyle 等重开路径同读一静态，重开不成立）；once-per-instance 守卫
+     *  防重复反射。失败静默（表现 = 磨砂条残留，无崩溃）。 */
+    private fun neutralizeBarBlur(bar: View) {
+        synchronized(blurNeutralized) {
+            if (!blurNeutralized.add(bar)) return
+        }
+        runCatching {
+            generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredMethod(
+                            "setBlurEnable",
+                            Boolean::class.javaPrimitiveType,
+                        ).apply { isAccessible = true }
+                    }.getOrNull()
+                }?.invoke(bar, false)
+        }
+        android.util.Log.println(
+            android.util.Log.INFO, "LiquidGlass",
+            "iqoo-secure bar blur neutralized",
+        )
     }
 
     /** 逐帧结构化扫描（会话装配时先行一轮，mirrorVisibleGate 顺带执行）——底栏内部装饰

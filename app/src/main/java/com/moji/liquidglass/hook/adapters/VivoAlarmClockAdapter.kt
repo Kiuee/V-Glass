@@ -358,9 +358,17 @@ object VivoAlarmClockAdapter : AppAdapter {
         // setChecked 不换图（图标 tint 恒 null、素材为普通矢量/符号 drawable），按
         // isSelected 真值源统一强制收敛（不走库 U(index,title,res) 换图口——非全局主题
         // 分支 reset()+start() 重播 AVD 动画）。事件 + 逐帧双路收敛见 enforcePreviewIcons。
-        session.previewIconSwapper = { _, _ ->
+        // 翻转条目的图标过渡动画瞬时落定（snapSelectionAnimation，2.9.47 滑动切换瞬间
+        // 光斑/提亮闪烁修复）——setChecked 末尾 w(1.0f/0.0f) 对挂载条目启动 ~250ms 图标
+        // 缩放 ValueAnimator，每次翻转重播、被逐 tick 镜像。
+        session.previewIconSwapper = { index, checked ->
+            snapSelectionAnimation(session, index, checked)
             enforcePreviewIcons(session)
         }
+        // 预览期采样冻结（2.9.47 滑动切换瞬间整栏提亮闪烁修复）：拖动悬停窗口内条带
+        // 一次性录制后纯回放——越界翻转触发的底栏重渲染不再进入磨砂底（本应用动态
+        // 模糊已在构造器中性化，此处为纵深防御）；预览结束自动解冻恢复实时采样。
+        session.backdropFreezeGate = { session.isTabPreviewActive }
         // 压制重申 + 装饰重申（帧循环每帧执行，仅失配时写入）+ 预览图标逐帧收敛（一次性
         // apply 失败/被顶掉的自愈通道）+ 显隐 Y 门控：悬浮工具条（BottomToolbarManager
         // m.u）出现/收起时对底栏做 translationY 0 ↔ 滑出 的 400ms ObjectAnimator 对滑
@@ -373,6 +381,43 @@ object VivoAlarmClockAdapter : AppAdapter {
             container.isShown && container.translationY < container.height * 0.5f
         }
         session.onAuxGlassRestore = { restoreDecorations() }
+    }
+
+    /** 预览翻转后的图标过渡动画瞬时落定（2.9.47 滑动切换瞬间光斑/提亮闪烁修复）：
+     *  originui `VNavMenuItem.setChecked` 末尾 `w(1.0f/0.0f)` 对挂载条目启动
+     *  `motionDurationLong1` (~250ms、FastOutSlowIn) `ValueAnimator` 驱动图标缩放过渡
+     *  （`B(f,f)` → 辅助器 `u.d(f,f,iconView)` 写落定），每次翻转重播、被逐 tick 镜像 =
+     *  每次切换一次图标"呼吸"式亮度跳变（深色放大）。本方法取消在飞动画器并反射
+     *  `B(float,float)` 以 (end,end) 瞬时写落定——同栈赶在下一个采样 tick 前，镜像只见
+     *  落定帧，与引擎"悬停 = 动画末帧落定外观"预览语义一致。锚点真名（jadx
+     *  "renamed from" 注释 + 方法体实证，本库 originui 与健康同族异版）：动画器字段 =
+     *  `t`（private，显示名 f6465t）、落定写入 = `B(float,float)`（private，jadx
+     *  "Access modifiers changed from: private"；`w(float)` = 健康 x() 同构）。沿超类
+     *  链查找，任一环节失败静默（表现 = 动画照播，与既有行为一致，无回归面）。 */
+    private fun snapSelectionAnimation(session: GlassSession, index: Int, checked: Boolean) {
+        val item = session.tabViews.getOrNull(index) ?: return
+        val end = if (checked) 1f else 0f
+        runCatching {
+            val field = generateSequence<Class<*>>(item.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching { cls.getDeclaredField("t").apply { isAccessible = true } }
+                        .getOrNull()
+                }
+            (field?.get(item) as? android.animation.ValueAnimator)?.cancel()
+        }
+        runCatching {
+            val snap = generateSequence<Class<*>>(item.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredMethod(
+                            "B",
+                            Float::class.javaPrimitiveType,
+                            Float::class.javaPrimitiveType,
+                        ).apply { isAccessible = true }
+                    }.getOrNull()
+                }
+            snap?.invoke(item, end, end)
+        }
     }
 
     /** 逐帧结构化扫描（会话装配时先行一轮，mirrorVisibleGate 顺带执行）——底栏内部装饰

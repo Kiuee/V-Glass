@@ -187,6 +187,7 @@ object VivoThemeAdapter : AppAdapter {
         // 搜索返回路径应用会把底栏 alpha 写回 1（应用搜索链路写回 alpha=1，见 §10.7 压制重申条）：恢复期第一帧前
         // 同步重申压制；帧循环恢复后由 mirrorVisibleGate 逐帧接管
         containerRef?.get()?.takeIf { it.isAttachedToWindow }?.let { if (it.alpha != 0f) it.alpha = 0f }
+        containerRef?.get()?.let { neutralizeInnerBarBlur(it, facade) }
     }
 
     override fun onSessionCreated(
@@ -206,7 +207,11 @@ object VivoThemeAdapter : AppAdapter {
         // 条带、冻结期间纯回放（零外部 WebView draw），离开恢复实时采样。非冻结页保持
         // 引擎直绘路径——采样去重（RenderNode 回放）跨 Surface 重建的显示列表会被 HWUI
         // 丢弃，表现为"玻璃轮廓在、内容空"（§10.7 采样去重回放条）。
-        session.backdropFreezeGate = { visibleWebViewOrNull(session) != null }
+        // 采样冻结（2.9.47 合并）：拖动悬停预览窗口（isTabPreviewActive）或可见 WebView
+        // 页时一次性录制条带后纯回放——预览写入触发的底栏重渲染（含全局模糊开启时
+        // VBlur 动态模糊层的重渲染，其绕过 view alpha 直绘进采样条带）不再引起磨砂底
+        // 亮度跳变；预览结束/离开 H5 页自动解冻恢复实时采样。
+        session.backdropFreezeGate = { session.isTabPreviewActive || visibleWebViewOrNull(session) != null }
         // 压制重申（搜索返回原栏重现修复，§10.7 压制重申条）：应用在搜索页建立后 300ms 把
         // 底栏 alpha 写回 1（h8/c JumpSearchPageEventMessage 路径），Theme 暂停期间帧循
         // 环停止、无纠错——帧循环每帧经 mirrorVisibleGate 重申（仅失配时写入，防每帧
@@ -220,11 +225,46 @@ object VivoThemeAdapter : AppAdapter {
         // 早期压制认领（冷启动闪现修复，见 installAppHooks）：装配即压制，原栏从 inflate
         // 起全程不可见；此后压制/还原由会话接管（restore 恢复 alpha=1）
         earlySuppressed.remove(session.tabContainer)
+        // 内层底栏动态模糊层中性化（见 neutralizeInnerBarBlur）：滑动切换瞬间闪烁源
+        neutralizeInnerBarBlur(session.tabContainer, facade)
     }
 
     @Volatile private var containerRef: WeakReference<View>? = null
     private val earlySuppressed: MutableSet<View> =
         java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+    private val blurNeutralized: MutableSet<View> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /** 内层底栏动态模糊层中性化（2.9.47 滑动切换瞬间"整栏提亮/光斑"闪烁修复）：
+     *  originui bar 构造器尾在系统全局模糊开启时 setBlurEnable(true)——VBlur 磨砂条
+     *  绕过 view alpha 直绘进应用窗口（真机 logcat 实证：HWUI BlurEffectManager 逐帧
+     *  重绘，早于模块注入且贯穿拖动悬停窗口），透过半透明玻璃可见；越界翻转触发其
+     *  重渲染 = 磨砂底亮度跳变。反射调用公开 API setBlurEnable(false) 一次性关闭
+     *  （内部同步置静态开关 L0=false——setCardStyle 等重开路径读取同一静态，重开不
+     *  成立）；once-per-instance 守卫防重复反射。失败静默（表现 = 磨砂条残留，无崩溃）。 */
+    private fun neutralizeInnerBarBlur(container: View, facade: HookFacade) {
+        var inner: View? = null
+        fun walk(v: View?) {
+            if (v == null || inner != null) return
+            if (v.javaClass.name == INNER_BAR_CLASS) {
+                inner = v
+                return
+            }
+            if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        }
+        walk(container)
+        val bar = inner ?: return
+        synchronized(blurNeutralized) {
+            if (!blurNeutralized.add(bar)) return
+        }
+        runCatching {
+            bar.javaClass
+                .getMethod("setBlurEnable", Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+                .invoke(bar, false)
+        }
+        facade.log(android.util.Log.INFO, "theme bar blur neutralized")
+    }
 
     override fun installAppHooks(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader) {
         runCatching {
@@ -335,12 +375,16 @@ object VivoThemeAdapter : AppAdapter {
             holder.javaClass.getField(field).get(holder) as? Drawable
         }.getOrNull()
 
-    /** uj.a 图标对的换图取值（与底栏 `setItemSelected`/`f()` 同语义）：
-     *  checked = b（静态选中）→ d（Lottie 选中，setProgress(1.0f) 跳末帧）→ f；
-     *  unchecked = e → a（静态非选中）→ c（Lottie 非选中，playAnimation）→
-     *  d(setProgress(0.0f) 兜底)。Lottie 方法真名（本 APK 混淆版）：
-     *  z(float) = setProgress、l() = playAnimation（jadx LottieDrawable 实证）；
-     *  进度驱动失败时仍换图（帧位停留旧进度，不崩溃）。 */
+    /** uj.a 图标对的换图取值（2.9.47 预览路径**去动画化**——滑动切换瞬间光斑/提亮闪烁
+     *  修复）：checked = b（静态选中）→ d（Lottie 选中，停止 + z(1.0f) 跳末帧）→ f；
+     *  unchecked = e → a（静态非选中）→ **c（Lottie 非选中，停止 + z(1.0f) 落定）** →
+     *  d（选中 Lottie，停止 + z(0.0f) 兜底）。原版 unchecked 的 c 走 `l()`
+     *  （playAnimation）重播 OUT 动画 = 每次反选镜像到动画中间帧（滑动切换瞬间光斑/
+     *  提亮闪烁源），剪除——落定取值对齐应用自身主题落定惯用法（jadx
+     *  VBottomNavigationView 主题应用路径实证：`c.z(1.0f)` 优先、`d.z(0.0f)` 兜底，
+     *  纯定帧不播放）。Lottie 方法真名（本 APK 混淆版，jadx 方法体实证）：
+     *  z(float) = setProgress、l() = playAnimation、j() = isRunning、d() = 停止
+     *  （应用自身在 j() 为真时调 d()）；进度驱动失败时仍换图（帧位停留旧进度，不崩溃）。 */
     private class IconPair(
         val normal: Drawable?,
         val selected: Drawable?,
@@ -356,19 +400,20 @@ object VivoThemeAdapter : AppAdapter {
             }
         }
 
-        private fun play(lottie: Drawable) {
+        private fun stopIfRunning(lottie: Drawable) {
             runCatching {
-                lottie.javaClass
-                    .getMethod("l")
-                    .apply { isAccessible = true }
-                    .invoke(lottie)
+                if (lottie.javaClass.getMethod("j").apply { isAccessible = true }
+                        .invoke(lottie) as Boolean
+                ) {
+                    lottie.javaClass.getMethod("d").apply { isAccessible = true }.invoke(lottie)
+                }
             }
         }
 
         fun selected(): Drawable? = selected
-            ?: selectedLottie?.also { driveProgress(it, 1.0f) }
+            ?: selectedLottie?.also { stopIfRunning(it); driveProgress(it, 1.0f) }
         fun unselected(): Drawable? = normal
-            ?: normalLottie?.also { play(it) }
-            ?: selectedLottie?.also { driveProgress(it, 0.0f) }
+            ?: normalLottie?.also { stopIfRunning(it); driveProgress(it, 1.0f) }
+            ?: selectedLottie?.also { stopIfRunning(it); driveProgress(it, 0.0f) }
     }
 }

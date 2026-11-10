@@ -210,6 +210,7 @@ object VivoHealthAdapter : AppAdapter {
         AppAdapter.applyTransparentNavigationBar(activity, config)
         // 主题重放/未知路径把 alpha 写回 1 的纠错（帧循环恢复后由 mirrorVisibleGate 逐帧接管）
         barRef?.get()?.takeIf { it.isAttachedToWindow }?.let { if (it.alpha != 0f) it.alpha = 0f }
+        barRef?.get()?.let { neutralizeBarBlur(it) }
         // 主题重放（可在恢复期发生，如控制中心切深色后返回）会重建图标对、新选中符号
         // 进度归零——恢复期重驱动（幂等，已落定的驱动 = 无操作）；res 降级缓存一并清
         // （动态色主题下同名 res 的解析结果随主题变）
@@ -286,6 +287,9 @@ object VivoHealthAdapter : AppAdapter {
         barRef = WeakReference(session.tabContainer)
         sessionRef = WeakReference(session)
         reassertBarDecorations(session.tabContainer)
+        // 底栏动态模糊层中性化（见 neutralizeBarBlur）：全局模糊开启时 VBlur 磨砂条绕过
+        // view alpha 直绘进窗口，越界翻转触发其重渲染 = 磨砂底亮度跳变（2.9.47 修复）
+        neutralizeBarBlur(session.tabContainer)
         // 早期压制认领（冷启动闪现修复，见 installAppHooks）：装配即由会话接管压制/还原
         earlySuppressed.remove(session.tabContainer)
         // 选中符号预驱动（首悬停发浅修复，见 preDriveSelectedSymbols）
@@ -296,7 +300,11 @@ object VivoHealthAdapter : AppAdapter {
         // **不走 O()/r()**（其 U(start) 会重播状态动画）；映射每次实时解析：换主题
         // （HealthThemeManager → a0/s0 重放）会整体重建 F 映射，重建 = 新实例 → 引用
         // 失配 → 下一帧自动重挂（自愈），不缓存。
-        session.previewIconSwapper = { _, _ ->
+        // 翻转条目的图标过渡动画瞬时落定（snapSelectionAnimation，2.9.47 滑动切换瞬间
+        // 光斑/提亮闪烁修复）——setChecked 末尾 x(1.0f/0.0f) 对挂载条目启动 ~250ms 图标
+        // 缩放 ValueAnimator，每次翻转重播、被逐 tick 镜像。
+        session.previewIconSwapper = { index, checked ->
+            snapSelectionAnimation(session, index, checked)
             enforcePreviewIcons(session)
         }
         // 压制重申 + 装饰重申（帧循环每帧执行，仅失配时写入）+ 预览图标逐帧收敛（一次性
@@ -307,7 +315,79 @@ object VivoHealthAdapter : AppAdapter {
             enforcePreviewIcons(session)
             true
         }
+        // 预览期采样冻结（2.9.47 滑动切换瞬间整栏提亮闪烁修复）：拖动悬停窗口内条带
+        // 一次性录制后纯回放——越界翻转触发的底栏重渲染（含全局模糊开启时 VBlur 动态
+        // 模糊层的重渲染，其绕过 view alpha 直绘进采样条带）不再进入磨砂底；预览结束
+        // 自动解冻恢复实时采样。
+        session.backdropFreezeGate = { session.isTabPreviewActive }
         session.onAuxGlassRestore = { restoreDecorations() }
+    }
+
+    private val blurNeutralized: MutableSet<View> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /** 底栏动态模糊层中性化（2.9.47 滑动切换瞬间"整栏提亮/光斑"闪烁修复）：originui
+     *  构造器尾在系统全局模糊开启时 setBlurEnable(true)——VBlur 磨砂条绕过 view alpha
+     *  直绘进应用窗口（真机 logcat 实证：HWUI BlurEffectManager 逐帧重绘，早于模块
+     *  注入且贯穿拖动悬停窗口），透过半透明玻璃可见；越界翻转触发其重渲染 = 磨砂底
+     *  亮度跳变。反射调用公开 API setBlurEnable(false) 一次性关闭（内部同步置静态
+     *  开关，setCardStyle 等重开路径同读一静态，重开不成立）；once-per-instance 守卫
+     *  防重复反射。失败静默（表现 = 磨砂条残留，无崩溃）。 */
+    private fun neutralizeBarBlur(bar: View) {
+        synchronized(blurNeutralized) {
+            if (!blurNeutralized.add(bar)) return
+        }
+        runCatching {
+            generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredMethod(
+                            "setBlurEnable",
+                            Boolean::class.javaPrimitiveType,
+                        ).apply { isAccessible = true }
+                    }.getOrNull()
+                }?.invoke(bar, false)
+        }
+        android.util.Log.println(
+            android.util.Log.INFO, "LiquidGlass",
+            "vivo-health bar blur neutralized",
+        )
+    }
+
+    /** 预览翻转后的图标过渡动画瞬时落定（2.9.47 滑动切换瞬间光斑/提亮闪烁修复）：
+     *  originui `VNavMenuItem.setChecked` 末尾 `x(1.0f/0.0f)` 对挂载条目启动
+     *  `motionDurationLong1` (~250ms、FastOutSlowIn) `ValueAnimator`（字段真名 `K`，
+     *  public）驱动图标缩放过渡（`D(f,f)` → 辅助器 `L.d(f,f,iconView)` 写落定），每次
+     *  翻转重播、被逐 tick 镜像 = 每次切换一次图标"呼吸"式亮度跳变（深色放大）。
+     *  本方法取消在飞动画器并反射 `D(float,float)`（public final，jadx 方法体实证：
+     *  `L.d(f2,f3,view)` + `M=f2` 进度记录）以 (end,end) 瞬时写落定——同栈赶在下一个
+     *  采样 tick 前，镜像只见落定帧，与引擎"悬停 = 动画末帧落定外观"预览语义一致。
+     *  锚点沿超类链查找（子类 HealthBottomNavigationView 不改声明）；任一环节失败
+     *  静默（表现 = 动画照播，与既有行为一致，无回归面）。 */
+    private fun snapSelectionAnimation(session: GlassSession, index: Int, checked: Boolean) {
+        val item = session.tabViews.getOrNull(index) ?: return
+        val end = if (checked) 1f else 0f
+        runCatching {
+            val field = generateSequence<Class<*>>(item.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching { cls.getDeclaredField("K").apply { isAccessible = true } }
+                        .getOrNull()
+                }
+            (field?.get(item) as? android.animation.ValueAnimator)?.cancel()
+        }
+        runCatching {
+            val snap = generateSequence<Class<*>>(item.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredMethod(
+                            "D",
+                            Float::class.javaPrimitiveType,
+                            Float::class.javaPrimitiveType,
+                        ).apply { isAccessible = true }
+                    }.getOrNull()
+                }
+            snap?.invoke(item, end, end)
+        }
     }
 
     /** 逐帧结构化扫描（会话装配时先行一轮，mirrorVisibleGate 顺带执行）——底栏内部装饰

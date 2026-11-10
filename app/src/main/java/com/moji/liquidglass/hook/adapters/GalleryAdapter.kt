@@ -1,8 +1,6 @@
 package com.moji.liquidglass.hook.adapters
 
 import android.app.Activity
-import android.os.Handler
-import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import com.moji.liquidglass.config.ModuleConfig
@@ -85,7 +83,6 @@ object GalleryAdapter : AppAdapter {
     private var barWantedVisible = true
     @Volatile
     private var photoPageActive = false
-    private val handler = Handler(Looper.getMainLooper())
 
     /** 处于多选中的 SelectionManager 实例（弱引用键：页面销毁后条目自动失效）。 */
     private val selectionManagers = WeakHashMap<Any, Boolean>()
@@ -188,32 +185,25 @@ object GalleryAdapter : AppAdapter {
         // 已录制的 RenderNode：条带只在几何变化时重录，其余帧纯回放，内容仍是当帧实时
         // （无降频滞后）；隐藏 API 取不到时引擎自动回退 view.draw（不崩溃）。
         session.backdropLiveNodeSampling = true
+        // 预览期采样冻结（2.9.47 滑动切换瞬间整栏提亮闪烁修复）：拖动悬停窗口内条带
+        // 一次性录制后纯回放，越界翻转触发的底栏重渲染不再进入磨砂底；预览结束自动
+        // 解冻恢复实时采样（实时显示列表采样随之恢复）。
+        session.backdropFreezeGate = { session.isTabPreviewActive }
+        // 底栏动态模糊层中性化（见 neutralizeBarBlur）：全局模糊开启时 VBlur 磨砂条绕过
+        // view alpha 直绘进窗口，越界翻转触发其重渲染 = 磨砂底亮度跳变（2.9.47 修复）
+        neutralizeBarBlur(session.tabContainer)
         // 静止降帧由 TargetHook 会话创建期统一接线（引擎单管线）；GLRootView.onDraw
         // 信号仅用于升满帧率档（GL 合成空窗/图标动画/光效不触发 GL 绘制，不门控绘制
         // ——GL 空窗的空白帧由静止档低频采样自愈）。旧事件驱动通道已退役。
-        // 拖离原选中 tab 的反选还原 = 应用自身 i(item) 原生语义（jadx 10.1.6.4 实证：
-        // setChecked(false) + 停动画 + 按状态表换回未选中图）。setChecked 不换图标——
-        // 选中观感由 bar 经 setItemSelected 挂选中 lottie@1f，仅 setChecked 时拖离后
-        // 原 tab 仍显选中（与 vivo 官网 w(item) 同构问题，教训见 №03.7 教训 10）；
-        // 钩子失败由引擎回退动画首帧（不崩溃）。
+        // 拖离原选中 tab 的反选还原（2.9.47 落定化优先）：落定变体复刻 i(item) 静态
+        // 前缀、剪掉动画分支（滑动切换瞬间光斑/提亮闪烁修复——镜像逐 tick 跟随，动画
+        // 重播帧读作切换瞬间抖动）；反射失效回退应用原生 i(item)（带动画但外观正确
+        // ——API 漂移时降级不黑图标）。setChecked 不换图标——选中观感由 bar 经
+        // setItemSelected 挂选中 lottie@1f，仅 setChecked 时拖离后原 tab 仍显选中
+        // （与 vivo 官网 w(item) 同构问题，教训见 №03.7 教训 10）。
         session.previewIconUnselected = { index ->
-            runCatching { unselectTabIcon(session, index) }.getOrDefault(false)
-        }
-        // 取证：定时输出底栏可见性/透明度与门控输入，验证隐藏跟随是否生效
-        for (delay in longArrayOf(2_000, 4_000, 6_000, 8_000, 10_000)) {
-            handler.postDelayed({
-                runCatching {
-                    val bar = session.tabContainer
-                    val stateManager = activity.javaClass.getMethod("getStateManager").invoke(activity)
-                    val topState = stateManager?.javaClass?.getMethod("getTopState")?.invoke(stateManager)
-                    facade.log(
-                        android.util.Log.INFO,
-                        "bar probe: visibility=${bar.visibility} isShown=${bar.isShown} alpha=${bar.alpha} " +
-                            "topState=${topState?.javaClass?.name} wanted=$barWantedVisible " +
-                            "photoPage=$photoPageActive selection=${selectionManagers.size}",
-                    )
-                }.onFailure { facade.log(android.util.Log.WARN, "bar probe failed", it) }
-            }, delay)
+            runCatching { unselectTabIconSettled(session, index) }.getOrDefault(false) ||
+                runCatching { unselectTabIcon(session, index) }.getOrDefault(false)
         }
     }
 
@@ -227,7 +217,8 @@ object GalleryAdapter : AppAdapter {
      *  选中路径 setItemSelected 对称地挂选中 lottie@1f）。单锚点 = 方法真名 `"i"`
      *  （protected，声明在父类 VBottomNavigationView，沿超类链查找），参数取条目
      *  运行时类（VNavMenuItem，不硬编码）。失效返回 false → 引擎回退动画首帧
-     *  （不崩溃）。 */
+     *  （不崩溃）。**2.9.47 起为落定变体（unselectTabIconSettled）失效时的回退路径**
+     *  （带动画但外观正确）。 */
     private fun unselectTabIcon(session: GlassSession, index: Int): Boolean {
         val item = session.tabViews.getOrNull(index) ?: return false
         val bar = session.tabContainer
@@ -238,6 +229,124 @@ object GalleryAdapter : AppAdapter {
         unselect.isAccessible = true
         unselect.invoke(bar, item)
         return true
+    }
+
+    /** 拖离原选中 tab 的反选还原·**落定变体**（2.9.47 滑动切换瞬间光斑/提亮闪烁修复）：
+     *  反射复刻应用自身 `i(item)`（jadx 10.1.6.4 方法体取证）的**静态前缀**，剪掉两处
+     *  动画源——①静态首选分支原版在 setIcon 后调 `vfontsymbol.c.start(h)`
+     *  （FontSymbolDrawable 状态动画重播）→ 落定变体仅 setIcon 不 start；②lottie 回退
+     *  （原版未选中 e `playAnimation`）改停止 + 定帧：e 定 1.0f（OUT 动画终点 = 未选中
+     *  落定，库内选中路径对 e 同款 `setProgress(1.0f)` 实证）、f 定 0.0f（应用自身
+     *  "选中 lottie 回 0f"同款停止语义）。字段真名（jadx "renamed from"，单字母与包名
+     *  冲突被改显示名）：bar 映射 `t`（Map<VNavMenuItem,b>，沿超类链找声明类），状态对
+     *  `h`/`b` 静态图、`a` res、`e` 未选中 lottie、`f` 选中 lottie、`i` 当前挂载。
+     *  setChecked(false) 由引擎 setTabChecked 先行（本钩子在其后调用），不复翻。
+     *  反射任一环节失效返回 false → 调用方回退应用原生 i(item)（API 漂移降级不黑图标）。 */
+    private fun unselectTabIconSettled(session: GlassSession, index: Int): Boolean {
+        val item = session.tabViews.getOrNull(index) ?: return false
+        val bar = session.tabContainer
+        val mapField = generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+            .firstNotNullOfOrNull { cls ->
+                runCatching { cls.getDeclaredField("t").apply { isAccessible = true } }.getOrNull()
+            } ?: return false
+        val state = (mapField.get(bar) as? Map<*, *>)?.get(item) ?: return false
+
+        fun stateField(name: String): Any? =
+            generateSequence<Class<*>>(state.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredField(name).apply { isAccessible = true }.get(state)
+                    }.getOrNull()
+                }
+
+        fun stopLottieAt(lottie: Any, progress: Float) {
+            runCatching {
+                if (lottie.javaClass.getMethod("isRunning").invoke(lottie) as Boolean) {
+                    lottie.javaClass.getMethod("cancelAnimation").invoke(lottie)
+                }
+            }
+            runCatching {
+                lottie.javaClass
+                    .getMethod("setProgress", Float::class.javaPrimitiveType)
+                    .invoke(lottie, progress)
+            }
+        }
+
+        // 停在播动画（选中 lottie f / 当前挂载 drawable i——i(item) 原版同款前缀）
+        stateField("f")?.let { f ->
+            runCatching {
+                if (f.javaClass.getMethod("isRunning").invoke(f) as Boolean) {
+                    f.javaClass.getMethod("cancelAnimation").invoke(f)
+                }
+            }
+        }
+        (stateField("i") as? android.graphics.drawable.Drawable)?.let { current ->
+            runCatching {
+                if (current.javaClass.getMethod("isRunning").invoke(current) as Boolean) {
+                    current.javaClass.getMethod("cancelAnimation").invoke(current)
+                }
+            }
+        }
+
+        val setIconDrawable = runCatching {
+            item.javaClass.getMethod("setIcon", android.graphics.drawable.Drawable::class.java)
+                .apply { isAccessible = true }
+        }.getOrNull() ?: return false
+        val setIconRes = runCatching {
+            item.javaClass.getMethod("setIcon", Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+        }.getOrNull()
+
+        fun mount(drawable: android.graphics.drawable.Drawable): Boolean =
+            runCatching { setIconDrawable.invoke(item, drawable) }.isSuccess
+
+        // 状态表静态前缀（h → b → a，i(item) 原版同序；不调 vfontsymbol start）
+        (stateField("h") as? android.graphics.drawable.Drawable)?.let { return mount(it) }
+        (stateField("b") as? android.graphics.drawable.Drawable)?.let { return mount(it) }
+        (stateField("a") as? Int)?.takeIf { it != 0 }?.let { resId ->
+            if (setIconRes == null) return false
+            return runCatching { setIconRes.invoke(item, resId) }.isSuccess
+        }
+        // 静态全缺 → lottie 落定定帧（不播放）
+        (stateField("e") as? android.graphics.drawable.Drawable)?.let { e ->
+            stopLottieAt(e, 1.0f)
+            return mount(e)
+        }
+        (stateField("f") as? android.graphics.drawable.Drawable)?.let { f ->
+            stopLottieAt(f, 0.0f)
+            return mount(f)
+        }
+        return false
+    }
+
+    private val blurNeutralized: MutableSet<View> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
+    /** 底栏动态模糊层中性化（2.9.47 滑动切换瞬间"整栏提亮/光斑"闪烁修复）：originui
+     *  构造器尾在系统全局模糊开启时 setBlurEnable(true)——VBlur 磨砂条绕过 view alpha
+     *  直绘进应用窗口（真机 logcat 实证：HWUI BlurEffectManager 逐帧重绘），透过半透
+     *  明玻璃可见；越界翻转触发其重渲染 = 磨砂底亮度跳变。反射调用公开 API
+     *  setBlurEnable(false) 一次性关闭（内部同步置静态开关，重开路径同读一静态，重开
+     *  不成立）；once-per-instance 守卫防重复反射。失败静默（表现 = 磨砂条残留，无崩溃）。 */
+    private fun neutralizeBarBlur(bar: View) {
+        synchronized(blurNeutralized) {
+            if (!blurNeutralized.add(bar)) return
+        }
+        runCatching {
+            generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    runCatching {
+                        cls.getDeclaredMethod(
+                            "setBlurEnable",
+                            Boolean::class.javaPrimitiveType,
+                        ).apply { isAccessible = true }
+                    }.getOrNull()
+                }?.invoke(bar, false)
+        }
+        android.util.Log.println(
+            android.util.Log.INFO, "LiquidGlass",
+            "vivo-gallery bar blur neutralized",
+        )
     }
 
     override fun findTabBar(content: ViewGroup): View? {
