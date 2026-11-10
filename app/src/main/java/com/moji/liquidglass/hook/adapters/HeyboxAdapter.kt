@@ -41,7 +41,8 @@ import kotlin.math.abs
  *   CompoundButton.OnCheckedChangeListener`，onCheckedChanged = 唯一选中入口——
  *   字体切换（checked=粗体 FontProvider）+ 图标 Lottie 驱动（默认皮肤路径
  *   AccelWorldLottieKt.h(comp,0) 播 marker 段选中动画；皮肤路径 g(comp) 跳末帧）+
- *   `N4(index, checked)`（Fragment add/show/hide 到 `fl_container`，tag=下标；
+ *   切页口 `(index, checked)`（Fragment add/show/hide 到 `fl_container`，tag=下标；
+ *   R8 短名随版重排：1.3.399=N4、1.3.400=P4，候选链见 SWITCH_METHOD_CANDIDATES；
  *   rb_1→0 发现 / rb_2→1 游戏库 / rb_4→3 社区 / rb_5→4 我，rb_3→2 无 Fragment）
  *   + 双击回顶计时。点击 = 标准 RadioGroup 语义（performClick → 互斥级联 →
  *   onCheckedChanged），rb_1/rb_2/rb_4 选中一次后 onClick 被换成"回顶广播"发送器
@@ -64,7 +65,7 @@ import kotlin.math.abs
  *   `isChecked = checked`（RadioGroup 互斥级联：旧 tab false / 新 tab true 全走
  *   应用自身 onCheckedChanged，字体/状态选择器/皮肤 selector 天然跟随）→ lottie
  *   落定（AccelWorldLottieKt.g 反射直驱 marker 末帧）。副作用吞咽双锚（预览激活
- *   previewFlipping 时）：①`MainActivity.N4(IZ)`（切页——不吞则未松手页面已变）；
+ *   previewFlipping 时）：①`MainActivity` 切页口(IZ)（1.3.399=N4/1.3.400=P4——不吞则未松手页面已变）；
  *   ②`AccelWorldLottieKt.h(Lcom/airbnb/lottie/j;I)`（动画口——不吞则每次悬停重播
  *   选中动画；吞掉后由落定配方 g 直驱，动画口/直置口并存必用直置口，§0.5 B.1/B.2）。
  *   锚点失效静默降级：预览短暂重播动画后自止（h 是 marker 段一次性播放）、无崩溃。
@@ -121,7 +122,7 @@ object HeyboxAdapter : AppAdapter {
     override val targetPackage: String = "com.max.xiaoheihe"
     override val displayName: String = "小黑盒"
     override val tabActivityClassName: String? = TAB_ACTIVITY
-    override val baselineVersions: List<String> = listOf("1.3.399")
+    override val baselineVersions: List<String> = listOf("1.3.399", "1.3.400")
 
     private const val TAB_ACTIVITY = "com.max.xiaoheihe.MainActivity"
     private const val HOST_CLASS = "com.max.xiaoheihe.MainActivity"
@@ -131,16 +132,32 @@ object HeyboxAdapter : AppAdapter {
     private const val MID_TAB_ID_NAME = "vg_mid_tab"
     private const val CONTAINER_CLASS = "android.widget.RadioGroup"
 
-    /** 切页副作用入口 `MainActivity.N4(int, boolean)`（R8 改名，1.3.399 取证）。 */
-    private const val SWITCH_METHOD = "N4"
-    /** lottie 落定直置口 `AccelWorldLottieKt.g(LottieDrawable)`（R8 改名，1.3.399 取证）。 */
+    /** 切页副作用入口 `MainActivity.(int, boolean)`（R8 每升版重排短名，候选链新名优先
+     *  旧名回退：1.3.400=P4、1.3.399=N4；签名 (IZ)V 精确匹配——1.3.400 的 N4 已是
+     *  (MsgView,I) 别义方法、1.3.399 的 P4 是 (Drawable,String)V，均不会被误中）。 */
+    private val SWITCH_METHOD_CANDIDATES = listOf("P4", "N4")
+    /** lottie 落定直置口 `AccelWorldLottieKt.g(LottieDrawable)`（R8 改名，1.3.399 取证，
+     *  1.3.400 复核同名）。 */
     private const val LOTTIE_SETTLE_CLASS = "com.max.xiaoheihe.accelworld.AccelWorldLottieKt"
     private const val LOTTIE_SETTLE_METHOD = "g"
-    /** lottie 动画口 `AccelWorldLottieKt.h(LottieDrawable, int)`（R8 改名，1.3.399 取证）。 */
+    /** lottie 动画口 `AccelWorldLottieKt.h(LottieDrawable, int)`（R8 改名，1.3.399 取证，
+     *  1.3.400 复核同名）。 */
     private const val LOTTIE_ANIM_METHOD = "h"
-    /** 图标包装构造口 `MainActivity.d4(LottieDrawable, fallbackResId)`（R8 改名，1.3.399
-     *  取证）——返回 StateListDrawable{state_checked: lottie, default: 静态 PNG}。 */
-    private const val DRAWABLE_WRAP_METHOD = "d4"
+    /** 图标包装构造口 `MainActivity.(Drawable, int)Drawable`（R8 每升版重排短名，候选链：
+     *  1.3.400=f4、1.3.399=d4）——返回 StateListDrawable{state_checked: lottie,
+     *  default: 静态 PNG}。签名精确匹配：1.3.400 的 d4 已是 (String,String)Drawable
+     *  别义方法、1.3.399 的 f4 是 ()V，均不会被误中。 */
+    private val DRAWABLE_WRAP_CANDIDATES = listOf("f4", "d4")
+
+    /** 候选链定位已声明方法（§0.6.2 SOP-D：新名优先、旧名回退，逐个精确签名匹配静默
+     *  降级；返回命中方法，调用方以 `method.name` 留痕实际命中名）。 */
+    private fun resolveDeclaredMethod(
+        hostClass: Class<*>,
+        candidates: List<String>,
+        vararg paramTypes: Class<*>?,
+    ): java.lang.reflect.Method? = candidates.firstNotNullOfOrNull { name ->
+        runCatching { hostClass.getDeclaredMethod(name, *paramTypes) }.getOrNull()
+    }
 
     /** 内容活动信号源说明（2026-11-04 起并入引擎单管线）：本应用此前自接的
      *  RecyclerView/LottieAnimationView/CompoundButton 三类均在引擎默认列表内
@@ -185,16 +202,16 @@ object HeyboxAdapter : AppAdapter {
         return st[1] != 0L && now - st[1] >= FREEZE_ENTER_MS
     }
 
-    /** 预览翻转进行中（applier 置位）：N4/h 吞咽 hook 据此吞掉切页与动画口副作用。
+    /** 预览翻转进行中（applier 置位）：切页口/h 吞咽 hook 据此吞掉切页与动画口副作用。
      *  仅预览通道置位——正式点击（松手 performClick）时恒 false，应用切页照常。 */
     @Volatile private var previewFlipping = false
 
     /** 落定配方（installAppHooks 解析缓存）：AccelWorldLottieKt.g(LottieDrawable)。 */
     @Volatile private var settleMethod: java.lang.reflect.Method? = null
 
-    /** 图标包装映射（d4 after 捕获）：StateListDrawable → 内层 LottieDrawable。
+    /** 图标包装映射（包装构造口 after 捕获，1.3.399=d4/1.3.400=f4）：StateListDrawable → 内层 LottieDrawable。
      *  应用图标顶层 drawable 是 StateListDrawable{state_checked: lottie, default: 静态
-     *  PNG}（d4 构造）——落定 g 必须作用在内层 lottie 上（外层类名不含 lottie 前缀，
+     *  PNG}（包装构造口构造）——落定 g 必须作用在内层 lottie 上（外层类名不含 lottie 前缀，
      *  直接判定会静默跳过 = "必须先真实选中一次才有选中图标"根因）。弱键随换肤重建。 */
     private val stateListLottieMap =
         java.util.WeakHashMap<android.graphics.drawable.Drawable, android.graphics.drawable.Drawable>()
@@ -328,18 +345,19 @@ object HeyboxAdapter : AppAdapter {
             } else {
                 facade.log(android.util.Log.WARN, "AccelWorldLottieKt.$LOTTIE_SETTLE_METHOD not found (settle degraded)")
             }
-            // 图标包装捕获：d4(Drawable, int) after——arg0 = LottieDrawable、result =
+            // 图标包装捕获：包装构造口(Drawable, int) after——arg0 = LottieDrawable、result =
             // StateListDrawable{state_checked: lottie, default: 静态 PNG}，按实例存映射
             // 供落定解包（外层类名无 lottie 前缀，不捕获则落定静默跳过 = 悬停永远显示
-            // 未选中图标）。皮肤路径后续 P4/c4 换新 StateListDrawable（无 lottie 内层）
+            // 未选中图标）。皮肤路径后续换新 StateListDrawable（无 lottie 内层）
             // → 查映射失配 → 静态选中态由 checked 状态自动呈现，无需落定，天然正确。
             runCatching {
                 val hostClass = Class.forName(HOST_CLASS, false, loader)
-                val wrap = hostClass.getDeclaredMethod(
-                    DRAWABLE_WRAP_METHOD,
+                val wrap = resolveDeclaredMethod(
+                    hostClass,
+                    DRAWABLE_WRAP_CANDIDATES,
                     android.graphics.drawable.Drawable::class.java,
                     Int::class.javaPrimitiveType,
-                )
+                ) ?: error("icon wrapper anchor miss: candidates=$DRAWABLE_WRAP_CANDIDATES")
                 facade.around(wrap, null) { call ->
                     val lottie = call.args.getOrNull(0) as? android.graphics.drawable.Drawable
                         ?: return@around null
@@ -348,24 +366,27 @@ object HeyboxAdapter : AppAdapter {
                     synchronized(stateListLottieMap) { stateListLottieMap[stateList] = lottie }
                     null
                 }
-                facade.log(android.util.Log.INFO, "hooked MainActivity.$DRAWABLE_WRAP_METHOD icon wrapper capture")
+                facade.log(android.util.Log.INFO, "hooked MainActivity.${wrap.name} icon wrapper capture")
             }.onFailure {
-                facade.log(android.util.Log.WARN, "hook MainActivity.$DRAWABLE_WRAP_METHOD failed (settle degraded)", it)
+                facade.log(android.util.Log.WARN, "hook MainActivity icon wrapper capture failed (settle degraded)", it)
             }
             // ③ 预览副作用吞咽（预览激活 previewFlipping 时）：
-            //    ③a 切页入口 MainActivity.N4(IZ)——不吞则拖动未松手页面已切（唯一
+            //    ③a 切页入口 MainActivity.(IZ)——不吞则拖动未松手页面已切（唯一
             //        Fragment show/hide 通道，正式点击路径同样经它，gate 只罩预览）。
             runCatching {
                 val hostClass = Class.forName(HOST_CLASS, false, loader)
-                val switch = hostClass.getDeclaredMethod(
-                    SWITCH_METHOD, Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
-                )
+                val switch = resolveDeclaredMethod(
+                    hostClass,
+                    SWITCH_METHOD_CANDIDATES,
+                    Int::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                ) ?: error("page switch anchor miss: candidates=$SWITCH_METHOD_CANDIDATES")
                 facade.around(switch, { _ ->
                     if (previewFlipping) false else null
                 }, null)
-                facade.log(android.util.Log.INFO, "hooked MainActivity.$SWITCH_METHOD preview gate (page switch)")
+                facade.log(android.util.Log.INFO, "hooked MainActivity.${switch.name} preview gate (page switch)")
             }.onFailure {
-                facade.log(android.util.Log.WARN, "hook MainActivity.$SWITCH_METHOD failed (drag preview may switch pages)", it)
+                facade.log(android.util.Log.WARN, "hook page switch preview gate failed (drag preview may switch pages)", it)
             }
             //    ③b 动画口 AccelWorldLottieKt.h(LottieDrawable, int)——onCheckedChanged
             //        checked 分支经它重播选中动画（§0.5 A.2 无过程感违规源）；吞掉后由
@@ -907,7 +928,7 @@ object HeyboxAdapter : AppAdapter {
     // —— 拖动悬停预览（§0.5）：直控翻转 + 动画口吞咽 + 落定直驱 ——
 
     /** 预览选中翻转（itemCheckedApplier）：setChecked 有切页（RadioGroup 级联 →
-     *  onCheckedChanged → N4）/动画（h 重播选中动画）双副作用，反射通道不可用——
+     *  onCheckedChanged → 切页口）/动画（h 重播选中动画）双副作用，反射通道不可用——
      *  状态照走应用自身 checked 通道（字体/文字色选择器/皮肤 selector 天然跟随），
      *  动画口 h 由 hook 按预览标志吞咽、落定由 g 直驱末帧（§0.5 B.1 动画口/直置口
      *  并存必用直置口、B.2 落定取自编程路径）。同态去重：重复 setChecked 会重放级联。 */
@@ -927,8 +948,8 @@ object HeyboxAdapter : AppAdapter {
      *  是 StateListDrawable{checked: lottie, default: 静态 PNG}——顶层类名无 lottie
      *  前缀，直接判定会静默跳过），反射调 AccelWorldLottieKt.g 跳到主题 marker 段
      *  末帧（应用自身落定配方——皮肤路径 onCheckedChanged else 分支同款语义）。
-     *  解包链：①d4 捕获映射（主）；②StateListDrawable.getStateDrawable(0) 隐藏 API
-     *  反射（兜底，d4 结构 index0 = checked lottie）。锚点失效静默降级：预览期图标
+     *  解包链：①包装构造口捕获映射（主）；②StateListDrawable.getStateDrawable(0) 隐藏 API
+     *  反射（兜底，外壳结构 index0 = checked lottie）。锚点失效静默降级：预览期图标
      *  短暂保持未选中态后随真实选中恢复，无崩溃路径。 */
     private fun settleIconLottie(button: CompoundButton) {
         val method = settleMethod ?: return
@@ -939,7 +960,7 @@ object HeyboxAdapter : AppAdapter {
         }
     }
 
-    /** 顶层 drawable → 内层 LottieDrawable：①d4 捕获映射；②StateListDrawable
+    /** 顶层 drawable → 内层 LottieDrawable：①包装构造口捕获映射；②StateListDrawable
      *  getStateDrawable(0) 隐藏 API 反射（LSPosed 环境豁免隐藏 API 限制）。两路皆
      *  失败返回 null（静默跳过落定）。 */
     private fun resolveLottieDrawable(top: android.graphics.drawable.Drawable): android.graphics.drawable.Drawable? {
