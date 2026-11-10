@@ -38,7 +38,7 @@ import java.lang.ref.WeakReference
  *   条目自配色 → tintRefractionContent=false。
  * - 底部几何（LiquidTab `setNavigationBarImmersion` 同款配方）：窗口延伸 =
  *   `LAYOUT_STABLE | LAYOUT_HIDE_NAVIGATION` 传统 flags（窗口 frame 延到导航条后、
- *   不退出 decor-fit）+ 透明导航栏三件套（PhoneWindow 吞色 hook + onResume/逐帧重申）；
+ *   不退出 decor-fit）+ 透明导航栏（逐帧重申；吞色 hook 已废，见 №12.7 教训 8）；
  *   应用切页会重写 systemUiVisibility 丢掉 flags（其 enableImmersiveStatus 组合不含
  *   LAYOUT_HIDE_NAVIGATION）→ `View.setSystemUiVisibility` 钩子 after **同栈补位**
  *   （先于任何 traversal，窗口永远看不到缺位状态——帧循环补位补不上同帧 traversal，
@@ -162,13 +162,9 @@ object TaobaoAdapter : AppAdapter {
     override fun onTabActivityResumed(activity: Activity, facade: HookFacade, config: () -> ModuleConfig) {
         AppAdapter.applyTransparentNavigationBar(activity, config)
         cachedNavInsetLift = -1
-        runCatching {
-            val decor = activity.window?.decorView ?: return
-            if (decor.systemUiVisibility and REQUIRED_LAYOUT_FLAGS != REQUIRED_LAYOUT_FLAGS) {
-                decor.systemUiVisibility = decor.systemUiVisibility or REQUIRED_LAYOUT_FLAGS
-                decor.requestApplyInsets()
-            }
-        }
+        // 注意：LAYOUT flags 不在此处写（onResume 时窗口尚未 attach）——pre-attach 携带
+        // LAYOUT_HIDE_NAVIGATION 会进入 vivo 系统侧按窗口的边到边判定（№12.7 教训 8）。
+        // flags 由 onSessionCreated 断言与 setSystemUiVisibility 补位 hook 在 attach 后写。
     }
 
     override fun installAppHooks(facade: HookFacade, config: () -> ModuleConfig, loader: ClassLoader) {
@@ -190,30 +186,10 @@ object TaobaoAdapter : AppAdapter {
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook TBFragmentTabHost ctor failed (app updated?)", it)
         }
-        // 导航栏透明（商店 §2.2 同款）：应用设色收口到框架 PhoneWindow，吞非透明色与
-        // 对比度蒙层 true；透明色与蒙层关闭另由逐帧重申兜底。停用全部放行（重启还原）
-        for (method in listOf("setNavigationBarColor", "setNavigationBarDividerColor")) {
-            val m = runCatching {
-                Class.forName("com.android.internal.policy.PhoneWindow", true, loader)
-                    .getDeclaredMethod(method, Int::class.javaPrimitiveType)
-            }.getOrNull()
-            if (m == null) {
-                facade.log(android.util.Log.WARN, "hook $method failed: PhoneWindow method not found")
-                continue
-            }
-            facade.swallowArgIf(m, 0) { arg ->
-                config().enabled && arg != android.graphics.Color.TRANSPARENT
-            }
-        }
-        runCatching {
-            val contrast = Class.forName("com.android.internal.policy.PhoneWindow", true, loader)
-                .getDeclaredMethod("setNavigationBarContrastEnforced", Boolean::class.javaPrimitiveType)
-            facade.swallowArgIf(contrast, 0) { arg ->
-                config().enabled && arg == true
-            }
-        }.onFailure {
-            facade.log(android.util.Log.WARN, "hook setNavigationBarContrastEnforced failed", it)
-        }
+        // 注意：不吞 PhoneWindow 设色三件套（商店 §2.2 旧配方已废）——吞参跳过方法体 =
+        // 跳过 vivo NavigationBarWindow 经 setNavigationBarColor 路径的策略记账，策略随后
+        // 按"未适配"重强制不透明色（№12.7 教训 8）；放行让策略全程知情，透明保持由逐帧
+        // 重申 + post-attach 断言承担。
         // 窗口延伸 flags 同栈补位：应用切页在输入事件里重写 systemUiVisibility（其组合
         // 不含 LAYOUT_HIDE_NAVIGATION）→ 同帧 traversal 用缺位值把窗口重排（bottom-gravity
         // 覆盖层随 content 闪动一帧）。after 同栈补位先于任何 traversal，窗口永远看不到
@@ -225,7 +201,16 @@ object TaobaoAdapter : AppAdapter {
             facade.around(setSui, null, { call ->
                 val view = call.thisObj as? View ?: return@around null
                 runCatching {
-                    if (view.systemUiVisibility and REQUIRED_LAYOUT_FLAGS != REQUIRED_LAYOUT_FLAGS) {
+                    if (!view.isAttachedToWindow) {
+                        // attach 前（含应用自身写入）剥掉 LAYOUT_HIDE_NAVIGATION——pre-attach
+                        // 携带该位会被 vivo 系统侧按窗口标记"想要边到边"→ 强制下巴条
+                        // （№12.7 教训 8）；attach 后由本 hook 补位回写。
+                        val v = view.systemUiVisibility
+                        val cleaned = v and View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION.inv()
+                        if (cleaned != v) {
+                            view.systemUiVisibility = cleaned
+                        }
+                    } else if (view.systemUiVisibility and REQUIRED_LAYOUT_FLAGS != REQUIRED_LAYOUT_FLAGS) {
                         view.systemUiVisibility = view.systemUiVisibility or REQUIRED_LAYOUT_FLAGS
                     }
                 }
@@ -234,6 +219,79 @@ object TaobaoAdapter : AppAdapter {
             facade.log(android.util.Log.INFO, "hooked View.setSystemUiVisibility: layout bits re-ORed in-stack")
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook setSystemUiVisibility failed", it)
+        }
+        installNavbarTransparentGateHooks(facade, loader)
+    }
+
+    /**
+     * vivo 导航条「下巴条」链路的进程内压制（№12.7 教训 8）。
+     *
+     * 完整机制（dexsql 反汇编 + SF/dumpsys/策略装载探针取证，详见 №12.6/№12.7）：
+     * vivo 按窗口 attach 时 `NavigationBarWindow.initNavColorPolicy` 从系统拉取**按
+     * Activity 组件**的策略（res 配置串）；res 含 `IMMERSE_V2,style:4`（v2 白名单组件如
+     * TBMainActivity）→ policy=0 → updateShowChinBar 外层门不开 → 无下巴条；res 为
+     * `/IMMERSE//`（Welcome，图标快启宿主）→ policy=4 → 门开 → `isAdapted()` 判定
+     * （fit 含导航条等条件）失败 → `LayoutParams.showChinBar=true` → 三层表现：
+     * ① system_server 创建 ChinBar SF 子图层（"…Welcome - ChinBar#…"）+ vivo DecorView
+     *    `shouldClearNavRect()==true` 时 draw/onPostDraw 以 `getLastChinbarColor()`
+     *    （不透明白）`drawRect` 盖条带（onPostDraw 画在子视图之上 = 三重像素取证"单色"来源）；
+     * ② 框架导航 ColorView（`android.R.id.navigationBarBackground`）被置可见；
+     * ③ 淘宝 `NavigationBarUtils.isNavigationBarShown` 读 ColorView visibility →
+     *    `initContentHeight`（-1 哨兵缓存）以「屏高 − 54」定信息流视口 → 条带无内容可画。
+     *
+     * 压制 = `installChinPolicyNeutralizer` 单层根治（mRes 重写 → 门永不开）。曾叠加的
+     * 兜底层（shouldClearNavRect hook / isNavigationBarShown hook / post-attach 断言 /
+     * fit 排除 / 500ms 自愈 / ColorView 压制）经有效性实证在中和器生效时全部为空转
+     * （最小变体四轮全路径 SF=0），已按无效代码清除。
+     */
+    private fun installNavbarTransparentGateHooks(facade: HookFacade, loader: ClassLoader) {
+        installChinPolicyNeutralizer(facade, loader)
+    }
+
+    /** 下巴条程序中和（№12.7 教训 8）：vivo 按窗口 attach 时经
+     *  `NavigationBarWindow.initNavColorPolicy` 从系统拉取**按 Activity 组件**的导航策略
+     *  （getNavBarParameter bundle：res 配置串）。真机取证：淘宝主 UI 宿主为
+     *  `TBMainActivity` 时系统下发 `IMMERSE_V2,style:4/IMMERSE//` → mNavColorPolicy=0/
+     *  style=-1 → updateShowChinBar 的外层门（isInImmersiveV2StyleV2 = policy==4 &&
+     *  style==0）不开 → 永不画下巴条；主 UI 宿主为 `Welcome`（图标快启流程）时系统只下发
+     *  `/IMMERSE//` → policy=4/style=0 → 门开 → isAdapted()（fit 含导航条等）判负 →
+     *  强制下巴条盖住条带 = "时好时坏"终极根因（两启动路径主 UI 宿主不同）。
+     *  中和 = 把 mRes 重写为 TBMainActivity 同款（补 `IMMERSE_V2,style:4` 前缀）：
+     *  dispatchApplyWindowInsets 每次 insets 派发都会用 mRes 重算 policy，只改一次性
+     *  policy 字段会被重算冲掉，改源头串让全部重算自然落到 policy=0/style=-1；
+     *  init 后的首次字段同步仅覆盖首帧窗口。非 `/IMMERSE//` 形态（其他策略）不动。 */
+    private fun installChinPolicyNeutralizer(facade: HookFacade, loader: ClassLoader) {
+        runCatching {
+            val cls = Class.forName("com.android.internal.policy.NavigationBarWindow", false, loader)
+            val m = cls.getDeclaredMethod("initNavColorPolicy", android.view.WindowManager.LayoutParams::class.java)
+            val policyF = cls.getDeclaredField("mNavColorPolicy").apply { isAccessible = true }
+            val styleF = cls.getDeclaredField("mNavColorStyle").apply { isAccessible = true }
+            val resF = cls.getDeclaredField("mRes").apply { isAccessible = true }
+            facade.around(m, null, { call ->
+                runCatching {
+                    val self = call.thisObj
+                    val res = resF.get(self) as String
+                    if (res == "/IMMERSE//") {
+                        resF.set(self, "IMMERSE_V2,style:4$res")
+                        if (policyF.getInt(self) == 4 && styleF.getInt(self) == 0) {
+                            policyF.setInt(self, 0)
+                            styleF.setInt(self, -1)
+                        }
+                        val title = runCatching {
+                            val attrs = call.args.firstOrNull()
+                            attrs?.javaClass?.getMethod("getTitle")?.invoke(attrs)?.toString()
+                        }.getOrDefault("?")
+                        facade.log(
+                            android.util.Log.INFO,
+                            "chin program neutralized (res → IMMERSE_V2,style:4) for $title",
+                        )
+                    }
+                }
+                null
+            })
+            facade.log(android.util.Log.INFO, "hooked NavigationBarWindow.initNavColorPolicy: chin neutralizer")
+        }.onFailure {
+            facade.log(android.util.Log.WARN, "hook chin neutralizer failed (not vivo framework?)", it)
         }
     }
 
