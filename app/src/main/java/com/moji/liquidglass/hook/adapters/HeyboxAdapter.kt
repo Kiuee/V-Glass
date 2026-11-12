@@ -20,7 +20,7 @@ import com.moji.liquidglass.hook.HookFacade
 import kotlin.math.abs
 
 /**
- * 小黑盒（com.max.xiaoheihe，版本 1.3.399 取证）适配器。
+ * 小黑盒（com.max.xiaoheihe，版本 1.3.401 取证；兼容窗口 1.3.399/1.3.400）适配器。
  *
  * - 主宿主链路：launcher = `SplashActivity`（@style/splash），真实主 Tab 页 =
  *   `MainActivity`（singleTask + portrait，应用级 @style/AppTheme =
@@ -42,7 +42,8 @@ import kotlin.math.abs
  *   字体切换（checked=粗体 FontProvider）+ 图标 Lottie 驱动（默认皮肤路径
  *   AccelWorldLottieKt.h(comp,0) 播 marker 段选中动画；皮肤路径 g(comp) 跳末帧）+
  *   切页口 `(index, checked)`（Fragment add/show/hide 到 `fl_container`，tag=下标；
- *   R8 短名随版重排：1.3.399=N4、1.3.400=P4，候选链见 SWITCH_METHOD_CANDIDATES；
+ *   R8 短名随版重排：1.3.399=N4、1.3.400=P4、1.3.401=P4（复核同名），候选链见
+ *   SWITCH_METHOD_CANDIDATES；
  *   rb_1→0 发现 / rb_2→1 游戏库 / rb_4→3 社区 / rb_5→4 我，rb_3→2 无 Fragment）
  *   + 双击回顶计时。点击 = 标准 RadioGroup 语义（performClick → 互斥级联 →
  *   onCheckedChanged），rb_1/rb_2/rb_4 选中一次后 onClick 被换成"回顶广播"发送器
@@ -113,6 +114,15 @@ import kotlin.math.abs
  *   `view.rootView === decor` 生效；onResume 前/宿主窗口重建以 context 链 Activity
  *   类名兜底（见 isHostWindow），非宿主窗口一次性留痕
  *   `window-extend: skipped non-host window`。
+ * - 宿主根导航衬垫压制（1.3.401 新增）：应用在 SDK>34 且 AB key
+ *   `improve_ab_testdisable_home_edge_to_edge`=false（默认）时走自身 edge-to-edge
+ *   路径（`com.max.xiaoheihe.app.n`：setDecorFitsSystemWindows(false) + 透明系统栏 +
+ *   给 `vg_main_root` 装 OnApplyWindowInsetsListener，把 systemBars 底 inset 写进
+ *   paddingBottom）——内容止于导航条顶、小白条条带只剩根背景色（旧"无内容"症状的
+ *   变色回归）。模块按资源名定位 `vg_main_root`（`session.appRoot` 是宿主 content
+ *   首子的 BlurTarget 包装层，不是被 padding 的 binding root），paddingBottom 归零 +
+ *   layout/逐帧双通道重申 + 会话还原。旧版与 Android ≤14 恒 0 → 机制 no-op；不动
+ *   平台 `View.setPadding` 热 hook（本应用只需单视图，避免全进程热路径开销）。
  * - 导航栏透明：onResume `applyTransparentNavigationBar`（§1.1 通用件）——窗口延伸后
  *   透明导航栏才真正生效（小白条条带透出全出血内容）。无设色收口需求（未发现换肤
  *   设色路径收口点，真机反馈再补吞色 hook）。
@@ -122,31 +132,33 @@ object HeyboxAdapter : AppAdapter {
     override val targetPackage: String = "com.max.xiaoheihe"
     override val displayName: String = "小黑盒"
     override val tabActivityClassName: String? = TAB_ACTIVITY
-    override val baselineVersions: List<String> = listOf("1.3.399", "1.3.400")
+    override val baselineVersions: List<String> = listOf("1.3.399", "1.3.400", "1.3.401")
 
     private const val TAB_ACTIVITY = "com.max.xiaoheihe.MainActivity"
     private const val HOST_CLASS = "com.max.xiaoheihe.MainActivity"
     private const val BAR_ID_NAME = "rg_main"
     private const val CONTENT_ID_NAME = "fl_container"
+    private const val ROOT_ID_NAME = "vg_main_root"
     private const val TIPS_ID_NAME = "vg_tips"
     private const val MID_TAB_ID_NAME = "vg_mid_tab"
     private const val CONTAINER_CLASS = "android.widget.RadioGroup"
 
     /** 切页副作用入口 `MainActivity.(int, boolean)`（R8 每升版重排短名，候选链新名优先
-     *  旧名回退：1.3.400=P4、1.3.399=N4；签名 (IZ)V 精确匹配——1.3.400 的 N4 已是
-     *  (MsgView,I) 别义方法、1.3.399 的 P4 是 (Drawable,String)V，均不会被误中）。 */
+     *  旧名回退：1.3.400=P4、1.3.401=P4（复核同名）、1.3.399=N4；签名 (IZ)V 精确匹配——
+     *  1.3.400 的 N4 已是 (MsgView,I) 别义方法、1.3.399 的 P4 是 (Drawable,String)V，
+     *  均不会被误中）。 */
     private val SWITCH_METHOD_CANDIDATES = listOf("P4", "N4")
     /** lottie 落定直置口 `AccelWorldLottieKt.g(LottieDrawable)`（R8 改名，1.3.399 取证，
-     *  1.3.400 复核同名）。 */
+     *  1.3.400/1.3.401 复核同名）。 */
     private const val LOTTIE_SETTLE_CLASS = "com.max.xiaoheihe.accelworld.AccelWorldLottieKt"
     private const val LOTTIE_SETTLE_METHOD = "g"
     /** lottie 动画口 `AccelWorldLottieKt.h(LottieDrawable, int)`（R8 改名，1.3.399 取证，
-     *  1.3.400 复核同名）。 */
+     *  1.3.400/1.3.401 复核同名）。 */
     private const val LOTTIE_ANIM_METHOD = "h"
     /** 图标包装构造口 `MainActivity.(Drawable, int)Drawable`（R8 每升版重排短名，候选链：
-     *  1.3.400=f4、1.3.399=d4）——返回 StateListDrawable{state_checked: lottie,
-     *  default: 静态 PNG}。签名精确匹配：1.3.400 的 d4 已是 (String,String)Drawable
-     *  别义方法、1.3.399 的 f4 是 ()V，均不会被误中。 */
+     *  1.3.400=f4、1.3.401=f4（复核同名）、1.3.399=d4）——返回 StateListDrawable
+     *  {state_checked: lottie, default: 静态 PNG}。签名精确匹配：1.3.400 的 d4 已是
+     *  (String,String)Drawable 别义方法、1.3.399 的 f4 是 ()V，均不会被误中。 */
     private val DRAWABLE_WRAP_CANDIDATES = listOf("f4", "d4")
 
     /** 候选链定位已声明方法（§0.6.2 SOP-D：新名优先、旧名回退，逐个精确签名匹配静默
@@ -462,6 +474,9 @@ object HeyboxAdapter : AppAdapter {
         session.backdropFreezeGate = { backdropFreezeGate() }
         extendContentContainer(activity, facade)
         removeTopShadowLine(activity, facade)
+        // 1.3.401 宿主 edge-to-edge 根衬垫压制：应用把导航条 inset 写进 vg_main_root
+        // paddingBottom（内容止于导航条顶），装配即归零 + layout/逐帧重申（见本节机制）
+        armHostRootNavPadding(session, facade)
         suppressTipsLayer(session, facade)
         installBadgeMirrors(session, facade)
         suppressMidTab(session, facade)
@@ -553,6 +568,87 @@ object HeyboxAdapter : AppAdapter {
         return resolved
     }
 
+    // —— 宿主根导航衬垫压制（1.3.401 SDK>34 新 edge-to-edge 路径） ——
+
+    /** 宿主根视图（binding root `vg_main_root`）：1.3.401 起应用在 `SDK_INT > 34` 且
+     *  AB key `improve_ab_testdisable_home_edge_to_edge`=false（默认）时走自身
+     *  edge-to-edge 路径（`com.max.xiaoheihe.app.n`：setDecorFitsSystemWindows(false) +
+     *  给 `vg_main_root` 装 OnApplyWindowInsetsListener，把 systemBars 底 inset 写进
+     *  paddingBottom）——内容因此止于导航条顶、小白条条带只剩根背景色（1.3.400 已修
+     *  "无内容"症状的变色回归）。压制 = 该根 paddingBottom 归零 + 事件/逐帧重申 +
+     *  restore 还原。**必须按资源名定位而非 session.appRoot**：宿主 content 首子是
+     *  BlurTarget 包装层（1.3.399 真机取证），被 padding 的是更深处的 binding root。 */
+    @Volatile private var hostRootRef: java.lang.ref.WeakReference<View>? = null
+
+    /** 首次捕获到的应用衬垫原值（restore 用；0 = 未捕获/无需还原）。 */
+    @Volatile private var hostRootOriginalBottomPadding: Int = 0
+
+    /** 事件驱动重申（layout 监听）：应用 insets 写回后当轮清零，不依赖玻璃帧循环
+     *  （深度静止档 1Hz 睡眠期同样即时；竖屏锁定 + insets 重派发低频）。 */
+    private val hostRootLayoutReassert =
+        android.view.ViewTreeObserver.OnGlobalLayoutListener { reassertHostRootNavPadding() }
+
+    /** 解析宿主根（资源名 vg_main_root，弱引用缓存；视图换树后重建缓存）。 */
+    private fun hostRootOrNull(session: GlassSession): View? {
+        hostRootRef?.get()?.takeIf { it.isAttachedToWindow }?.let { return it }
+        return findViewByIdByName(session.tabContainer.rootView, ROOT_ID_NAME)?.also {
+            hostRootRef = java.lang.ref.WeakReference(it)
+        }
+    }
+
+    /** 装配期直置 + 挂 layout 重申。原值只在首次看到非零 padding 时记录：1.3.399/
+     *  1.3.400 与 Android ≤14 恒 0（机制 no-op）；非零即应用 edge-to-edge 真实衬垫。 */
+    private fun armHostRootNavPadding(session: GlassSession, facade: HookFacade) {
+        runCatching {
+            val root = hostRootOrNull(session)
+            if (root == null) {
+                facade.log(
+                    android.util.Log.WARN,
+                    "heybox: $ROOT_ID_NAME not found (nav inset padding suppression skipped)",
+                )
+                return
+            }
+            if (root.paddingBottom > 0) {
+                hostRootOriginalBottomPadding = root.paddingBottom
+                root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, 0)
+                facade.log(
+                    android.util.Log.INFO,
+                    "heybox: host root nav inset padding ${hostRootOriginalBottomPadding} -> 0 ($ROOT_ID_NAME)",
+                )
+            } else {
+                facade.log(
+                    android.util.Log.INFO,
+                    "heybox: host root nav inset padding suppression armed ($ROOT_ID_NAME)",
+                )
+            }
+            session.tabContainer.rootView.viewTreeObserver
+                .addOnGlobalLayoutListener(hostRootLayoutReassert)
+        }.onFailure { facade.log(android.util.Log.WARN, "heybox: arm host root nav padding failed", it) }
+    }
+
+    /** 重申：应用每次 insets 派发都会把底 inset 写回 paddingBottom，发现非零当轮归零
+     *  （先记录原值——装配后首次派发可能晚于 arm）；稳态零写入。 */
+    private fun reassertHostRootNavPadding() {
+        val root = hostRootRef?.get() ?: return
+        if (root.paddingBottom == 0) return
+        if (hostRootOriginalBottomPadding == 0) hostRootOriginalBottomPadding = root.paddingBottom
+        root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, 0)
+    }
+
+    /** 会话还原：摘 layout 重申并还原应用原衬垫（仅当当前仍为 0；应用已自行重写则
+     *  保留应用状态——与 alpha 压制还原同口径）。 */
+    private fun disarmHostRootNavPadding() {
+        runCatching {
+            hostRootRef?.get()?.viewTreeObserver?.removeOnGlobalLayoutListener(hostRootLayoutReassert)
+        }
+        val root = hostRootRef?.get()
+        if (root != null && root.paddingBottom == 0 && hostRootOriginalBottomPadding != 0) {
+            root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, hostRootOriginalBottomPadding)
+        }
+        hostRootRef = null
+        hostRootOriginalBottomPadding = 0
+    }
+
     // —— 内容延伸（fl_container 填满 + 栏顶阴影线移除） ——
 
     /** contentReference：fl_container 原始 ABOVE 规则锚 id（restore 用）；0 = 无规则。 */
@@ -608,7 +704,7 @@ object HeyboxAdapter : AppAdapter {
             val maxHeight = if (shadowDimen > 0) shadowDimen + 2 else 32
             val content = decor.findViewById<ViewGroup>(android.R.id.content) ?: return
             // 定位扫描根：vg_main_root（资源 id）；id 失效则从 content 起全树（有界）
-            val rootId = res.getIdentifier("vg_main_root", "id", decor.context.packageName)
+            val rootId = res.getIdentifier(ROOT_ID_NAME, "id", decor.context.packageName)
             val scanRoot: View = if (rootId != 0) content.findViewById(rootId) ?: content else content
             var removed = false
             fun dfs(v: View, depth: Int) {
@@ -895,17 +991,19 @@ object HeyboxAdapter : AppAdapter {
     // —— 稳态重申与 restore ——
 
     /** 每帧调用（mirrorVisibleGate）：对 alpha 压制视图失配重申（应用若新增写回路径，
-     *  与芒果TV mirrorGate 同款兜底；稳态零写入）。 */
+     *  与芒果TV mirrorGate 同款兜底；稳态零写入）+ 宿主根导航衬垫失配重申
+     *  （1.3.401 insets 写回；layout 监听为主通道，此处兜底）。 */
     private fun reassertSuppression(session: GlassSession) {
         synchronized(suppressedViews) {
             for ((v, _) in suppressedViews) {
                 if (v.alpha != 0f) v.alpha = 0f
             }
         }
+        reassertHostRootNavPadding()
     }
 
     /** 会话还原（引擎 onAuxGlassRestore）：角标 overlay 摘除 + alpha 压制还原 +
-     *  内容容器 ABOVE 规则回填。 */
+     *  宿主根导航衬垫还原 + 内容容器 ABOVE 规则回填。 */
     private fun restoreSessionEdits() {
         activeSessionRef = null
         restoreBadgeMirrors()
@@ -917,6 +1015,7 @@ object HeyboxAdapter : AppAdapter {
             }
             suppressedViews.clear()
         }
+        disarmHostRootNavPadding()
         restoreContentContainer()
     }
 
