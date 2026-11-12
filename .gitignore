@@ -24,3 +24,8 @@ local.properties
 
 # 维护手册仅保留本地，不入库（含内部适配工作流，不对外公开）
 MAINTENANCE.md
+
+# 本地签名配置与密钥（不入库，用户自建自管）
+keystore.properties
+*.jks
+*.keystore

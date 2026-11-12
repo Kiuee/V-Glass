@@ -1,12 +1,32 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+// release 签名：仓库根存在 keystore.properties（gitignore，用户本地自建，口令不入库不经手
+// 任何外部流程）时用其密钥出包；缺失时回退 debug 签名。storeFile 支持相对仓库根或绝对路径。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
 
 android {
     namespace = "com.moji.liquidglass"
     compileSdk {
         version = release(37)
+    }
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
     }
 
     defaultConfig {
@@ -19,7 +39,9 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(
+                if (keystorePropsFile.exists()) "release" else "debug"
+            )
             // 正式版：启用 R8 代码收缩 + 资源收缩
             // keep 规则见 src/main/keepRules/rules.keep（Xposed 入口必须保名）
             optimization {
