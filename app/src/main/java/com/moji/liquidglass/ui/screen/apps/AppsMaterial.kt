@@ -2,6 +2,11 @@
 
 package com.moji.liquidglass.ui.screen.apps
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -32,8 +37,10 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -41,11 +48,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -78,8 +87,18 @@ internal fun AppsPagerMaterial(
     onSearchStatusChange: (SearchStatus) -> Unit,
     expandedPkgs: List<String>,
     onToggleExpand: (String) -> Unit,
+    onRefreshAdaptedVersions: () -> Unit,
+    refreshingAdaptedVersions: Boolean,
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    // 免适配版本表刷新中：顶栏刷新图标持续旋转
+    val refreshSpin = rememberInfiniteTransition(label = "adaptedVersionsRefreshSpin")
+    val refreshSpinAngle by refreshSpin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "adaptedVersionsRefreshSpinAngle",
+    )
     val filtered = remember(apps, searchStatus.searchText) {
         filterApps(apps, searchStatus.searchText)
     }
@@ -96,6 +115,20 @@ internal fun AppsPagerMaterial(
                     Column {
                         LargeFlexibleTopAppBar(
                             title = { Text(stringResource(R.string.apps)) },
+                            actions = {
+                                IconButton(
+                                    enabled = !refreshingAdaptedVersions,
+                                    onClick = onRefreshAdaptedVersions,
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Refresh,
+                                        contentDescription = stringResource(R.string.apps_refresh_adapted_versions),
+                                        modifier = Modifier.graphicsLayer {
+                                            if (refreshingAdaptedVersions) rotationZ = refreshSpinAngle
+                                        },
+                                    )
+                                }
+                            },
                             colors = TopAppBarDefaults.topAppBarColors(
                                 containerColor = MaterialTheme.colorScheme.surface,
                             ),

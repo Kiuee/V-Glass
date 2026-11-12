@@ -1,6 +1,11 @@
 package com.moji.liquidglass.ui.screen.apps
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -65,6 +71,7 @@ import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -74,6 +81,7 @@ import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.basic.SearchCleanup
+import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
@@ -91,12 +99,22 @@ internal fun AppsPagerMiuix(
     onSearchStatusChange: (SearchStatus) -> Unit,
     expandedPkgs: List<String>,
     onToggleExpand: (String) -> Unit,
+    onRefreshAdaptedVersions: () -> Unit,
+    refreshingAdaptedVersions: Boolean,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
     val enableBlur = LocalEnableBlur.current
     val backdrop = rememberBlurBackdrop(enableBlur)
     val blurActive = backdrop != null
     val barColor = if (blurActive) Color.Transparent else colorScheme.surface
+    // 免适配版本表刷新中：顶栏刷新图标持续旋转
+    val refreshSpin = rememberInfiniteTransition(label = "adaptedVersionsRefreshSpin")
+    val refreshSpinAngle by refreshSpin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+        label = "adaptedVersionsRefreshSpinAngle",
+    )
     // 顶栏折叠比例驱动假搜索框上移贴紧标题（对齐参考项目）
     val dynamicTopPadding by remember {
         derivedStateOf { 12.dp * (1f - scrollBehavior.state.collapsedFraction) }
@@ -115,6 +133,21 @@ internal fun AppsPagerMiuix(
                     TopAppBar(
                         color = barColor,
                         title = stringResource(R.string.apps),
+                        actions = {
+                            IconButton(
+                                enabled = !refreshingAdaptedVersions,
+                                onClick = onRefreshAdaptedVersions,
+                            ) {
+                                Icon(
+                                    imageVector = MiuixIcons.Refresh,
+                                    contentDescription = stringResource(R.string.apps_refresh_adapted_versions),
+                                    tint = colorScheme.onBackground,
+                                    modifier = Modifier.graphicsLayer {
+                                        if (refreshingAdaptedVersions) rotationZ = refreshSpinAngle
+                                    },
+                                )
+                            }
+                        },
                         scrollBehavior = scrollBehavior,
                         bottomContent = {
                             FakeSearchField(

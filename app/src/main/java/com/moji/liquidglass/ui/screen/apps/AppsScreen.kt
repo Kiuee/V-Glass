@@ -2,12 +2,14 @@ package com.moji.liquidglass.ui.screen.apps
 
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -21,9 +23,11 @@ import com.moji.liquidglass.ui.ConfigController
 import com.moji.liquidglass.ui.component.SearchStatus
 import com.moji.liquidglass.ui.component.StatusTag
 import com.moji.liquidglass.ui.component.bottombar.LocalMainPagerState
+import com.moji.liquidglass.ui.prefs.AdaptedVersionsStore
 import com.moji.liquidglass.ui.theme.LocalUiMode
 import com.moji.liquidglass.ui.theme.UiMode
 import com.moji.liquidglass.ui.theme.isInDarkTheme
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme
 
@@ -44,7 +48,9 @@ internal enum class AdaptState { Adapted, NotAdapted, NotInstalled }
 @Composable
 internal fun rememberTargetApps(): List<TargetAppInfo> {
     val context = LocalContext.current
-    return remember(context) {
+    // 远程免适配覆盖表代次参与 remember key：手动刷新拉到新表后 chip/展开列表立即重组
+    val overlayRevision = AdaptedVersionsStore.overlayRevision
+    return remember(context, overlayRevision) {
         val pm = context.packageManager
         AdapterRegistry.all.map { adapter ->
             val pkg = adapter.targetPackage
@@ -143,12 +149,36 @@ internal fun AdaptStatusTag(state: AdaptState) {
 @Composable
 fun AppsPager(bottomInnerPadding: Dp, config: ConfigController) {
     val apps = rememberTargetApps()
+    val context = LocalContext.current
     val searchHint = stringResource(R.string.apps_search_hint)
     var searchStatus by remember(searchHint) { mutableStateOf(SearchStatus(label = searchHint)) }
     var expandedPkgs by rememberSaveable { mutableStateOf(listOf<String>()) }
     val onSearchStatusChange: (SearchStatus) -> Unit = { searchStatus = it }
     val onToggleExpand: (String) -> Unit = { pkg ->
         expandedPkgs = if (pkg in expandedPkgs) expandedPkgs - pkg else expandedPkgs + pkg
+    }
+
+    // 免适配版本表手动刷新：仅用户点顶栏刷新时联网；三态结果（已更新/无变更/失败）Toast 反馈
+    var refreshingAdaptedVersions by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val onRefreshAdaptedVersions: () -> Unit = {
+        if (!refreshingAdaptedVersions) {
+            refreshingAdaptedVersions = true
+            scope.launch {
+                val message = when (val result = AdaptedVersionsStore.refresh(context)) {
+                    is AdaptedVersionsStore.RefreshResult.Updated -> context.getString(
+                        R.string.apps_adapted_versions_updated_fmt,
+                        result.updatedAt.ifBlank { context.getString(R.string.apps_adapted_versions_unknown_time) },
+                    )
+                    AdaptedVersionsStore.RefreshResult.Unchanged ->
+                        context.getString(R.string.apps_adapted_versions_unchanged)
+                    is AdaptedVersionsStore.RefreshResult.Failed ->
+                        context.getString(R.string.apps_adapted_versions_refresh_failed, result.reason)
+                }
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                refreshingAdaptedVersions = false
+            }
+        }
     }
 
     // 切离应用页即收起搜索并清词，避免返回时残留在展开态
@@ -170,6 +200,8 @@ fun AppsPager(bottomInnerPadding: Dp, config: ConfigController) {
             onSearchStatusChange = onSearchStatusChange,
             expandedPkgs = expandedPkgs,
             onToggleExpand = onToggleExpand,
+            onRefreshAdaptedVersions = onRefreshAdaptedVersions,
+            refreshingAdaptedVersions = refreshingAdaptedVersions,
         )
         UiMode.Miuix -> AppsPagerMiuix(
             bottomInnerPadding = bottomInnerPadding,
@@ -179,6 +211,8 @@ fun AppsPager(bottomInnerPadding: Dp, config: ConfigController) {
             onSearchStatusChange = onSearchStatusChange,
             expandedPkgs = expandedPkgs,
             onToggleExpand = onToggleExpand,
+            onRefreshAdaptedVersions = onRefreshAdaptedVersions,
+            refreshingAdaptedVersions = refreshingAdaptedVersions,
         )
     }
 }

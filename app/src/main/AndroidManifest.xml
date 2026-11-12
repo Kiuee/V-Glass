@@ -11,6 +11,10 @@
          目标应用清单随适配增长，用全局权限避免每个适配器同步维护 queries 声明。 -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
+    <!-- 免适配版本表远程刷新（应用页手动触发,管理器 UI 进程独占;hook 侧无网络行为）。
+         拉取源为 GitHub 仓库内 assets/adapted_versions.json 的 jsDelivr/raw 直链与公共镜像。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".GlassApp"
         android:allowBackup="true"
