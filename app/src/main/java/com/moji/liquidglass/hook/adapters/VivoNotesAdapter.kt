@@ -63,6 +63,11 @@ object VivoNotesAdapter : AppAdapter {
     private const val SELECT_DIRECT_METHOD = "b"
     // 延迟配色捕获：文字色动画 300ms，350ms 读稳态
     private const val COLOR_CAPTURE_DELAY_MS = 350L
+    // NavigationItemView 构造时写入的稳态配色字段（5.4.5.107 实证）：
+    // h = 选中色（b() 直设 title）、i = 未选中色（c(false) 动画终点）。装配期直接读，
+    // 不依赖 350ms 后的 title 动画落定。
+    private const val ITEM_SELECTED_COLOR_FIELD = "h"
+    private const val ITEM_UNSELECTED_COLOR_FIELD = "i"
     // 切页触发的页面根重扫防抖
     private const val SWEEP_DEBOUNCE_MS = 300L
 
@@ -79,6 +84,7 @@ object VivoNotesAdapter : AppAdapter {
     @Volatile private var capturedContentColor = 0
     @Volatile private var capturedAccentColor = 0
     @Volatile private var colorCapturePending = false
+    @Volatile private var staticColorsLogged = false
     @Volatile private var sweepPending = false
     @Volatile private var sweepMissLogged = false
     @Volatile private var writePointHitLogged = false
@@ -121,16 +127,27 @@ object VivoNotesAdapter : AppAdapter {
         activity.javaClass.name == tabActivityClassName
 
     override fun createExtractor(): TabExtractor = TabExtractor(descriptor).apply {
-        // 配色注入缝：title 是纯色 TextView（内容色/选中色都是运行时单色写入，无
-        // ColorStateList 选择器），装配期 extract 只能取到首个（未选中）tab 的当前单色；
-        // 延迟捕获（选中变化 350ms 后读稳态）经此通道供给强调色/内容色，主题与深浅切换
-        // 随每次选中变化重捕获自愈。深链冷启动直开"便签" tab 时装配期内容色短暂取自
-        // 选中 tab（= 强调色），捕获完成后 GlassRoot 延迟补取通道热替换。
+        // 配色注入缝：title 是纯色 TextView（无 ColorStateList 选择器），装配期 extract
+        // 只能取到首个 tab 的单色。优先读 NavigationItemView 构造期稳态字段 h（选中）/
+        // i（未选中）——冷启动首帧即可供给强调色（选中标签立即染色）；原 350ms 延迟捕获
+        // （文字色动画 300ms 后读稳态）仅作字段改名/异常兜底，不新增引擎刷新通道。
         colorOverride = {
             val content = capturedContentColor
             val accent = capturedAccentColor
-            if (content == 0 && accent == 0) null
-            else (content.takeIf { it != 0 }?.let(::Color)) to (accent.takeIf { it != 0 }?.let(::Color))
+            if (content != 0 && accent != 0 && content != accent) {
+                Color(content) to Color(accent)
+            } else {
+                // 冷启动首帧：title 纯色/动画未落定时捕获可能尚未成功，直接读条目
+                // 构造期写入的稳态字段（h 选中 / i 未选中），避免选中标签在装配期
+                // 落到内容色（症状：冷启动选中 tab 文字未染色）。
+                val static = staticItemColors()
+                when {
+                    static != null -> Color(static.first) to Color(static.second)
+                    content == 0 && accent == 0 -> null
+                    else -> (content.takeIf { it != 0 }?.let(::Color)) to
+                        (accent.takeIf { it != 0 }?.let(::Color))
+                }
+            }
         }
     }
 
@@ -345,6 +362,42 @@ object VivoNotesAdapter : AppAdapter {
                     "accent=#${Integer.toHexString(accent)}",
             )
         }
+    }
+
+    /** 条目构造期稳态配色（h=选中 / i=未选中，5.4.5.107 实证）。装配期即可读，
+     *  不依赖 title 动画落定；字段改名则返回 null，由原 350ms 捕获兜底。 */
+    private fun staticItemColors(): Pair<Int, Int>? {
+        val nav = navRef?.get() as? ViewGroup ?: return null
+        var content = 0
+        var accent = 0
+        for (i in 0 until nav.childCount) {
+            val item = nav.getChildAt(i) ?: continue
+            if (item.javaClass.name != ITEM_CLASS) continue
+            val selected = intField(item, ITEM_SELECTED_COLOR_FIELD)
+            val unselected = intField(item, ITEM_UNSELECTED_COLOR_FIELD)
+            if (accent == 0 && selected != 0) accent = selected
+            if (content == 0 && unselected != 0) content = unselected
+        }
+        if (content != 0 && accent != 0 && content != accent) {
+            if (!staticColorsLogged) {
+                staticColorsLogged = true
+                android.util.Log.println(
+                    android.util.Log.INFO, "LiquidGlass",
+                    "notes static colors: content=#${Integer.toHexString(content)} " +
+                        "accent=#${Integer.toHexString(accent)}",
+                )
+            }
+            return content to accent
+        }
+        return null
+    }
+
+    private fun intField(obj: Any?, name: String): Int {
+        if (obj == null) return 0
+        val field = generateSequence<Class<*>>(obj.javaClass) { it.superclass }
+            .firstNotNullOfOrNull { runCatching { it.getDeclaredField(name) }.getOrNull() }
+            ?: return 0
+        return runCatching { field.apply { isAccessible = true }.getInt(obj) }.getOrDefault(0)
     }
 
     // —— 内容延伸（待办/文档页根储备归零） ——
