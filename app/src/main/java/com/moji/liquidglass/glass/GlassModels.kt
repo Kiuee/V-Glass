@@ -33,6 +33,18 @@ data class GlassStyle(
     val refractionHeightScale: Float = 0.35f,
     /** 是否显示 tab 文字标签。 */
     val showLabels: Boolean = true,
+    /** 全局玻璃栏边缘光/内晕开关（实验，默认开）：关闭 = 原 Highlight.Default、无内晕。 */
+    val edgeGlow: Boolean = true,
+    /** 边缘光宽度（dp）。 */
+    val edgeWidthDp: Float = 1.5f,
+    /** 边缘光柔化（dp）。 */
+    val edgeBlurDp: Float = 0.75f,
+    /** 边缘光强度（0~1）。 */
+    val edgeAlpha: Float = 0.22f,
+    /** 内晕半径（dp）。 */
+    val innerGlowRadiusDp: Float = 10f,
+    /** 内晕强度（0~1）。 */
+    val innerGlowAlpha: Float = 0.35f,
 ) {
     companion object {
         fun fromConfig(config: ModuleConfig): GlassStyle = GlassStyle(
@@ -45,6 +57,12 @@ data class GlassStyle(
             refractionAmountScale = config.barRefractionAmountScale,
             refractionHeightScale = config.barRefractionHeightScale,
             showLabels = config.barShowLabels,
+            edgeGlow = config.barEdgeGlow,
+            edgeWidthDp = config.barEdgeWidthDp,
+            edgeBlurDp = config.barEdgeBlurDp,
+            edgeAlpha = config.barEdgeAlpha,
+            innerGlowRadiusDp = config.barInnerGlowRadiusDp,
+            innerGlowAlpha = config.barInnerGlowAlpha,
         )
     }
 }

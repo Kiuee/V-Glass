@@ -79,7 +79,8 @@ import kotlin.math.sign
  * 新增 onSelectedTabTapped（原地点击已选中 tab 回调——液泡手势层盖住内容层，
  * 该点击不会到达 LiquidBottomTab，由宿主转发实现原生"再点一次已选中 tab"行为）；
  * 新增 tintRefractionContent（折射副本层是否整层强调色 tint：LOTTIE_RESOLVE 与 WHOLE_TAB
- * 两模式均开启——选中/悬停 tab 在液泡内呈强调色，观感全局一致）。
+ * 两模式均开启——选中/悬停 tab 在液泡内呈强调色，观感全局一致）；
+ * 新增全局边缘光/内晕覆盖 highlight/innerShadow（null = 原 Highlight.Default、无内晕）。
  * 偏离上游 1:1（2026-10-23）：折射副本行（第二行 Row）四周外扩 2×blurRadius（required*
  * 尺寸）+ 盒高固定——用于胶囊裁剪时代的淡出带规避。**2.9.12 回退**：采样改条带矩形后
  * 淡出带整类消失，外扩失去存在原因；且副本行节点 = 节点高 + 2×(2×blur+14dp×量倍数)
@@ -116,6 +117,10 @@ fun LiquidBottomTabs(
      *  （恢复各 tab 原图标/选中态）。始终先于 onSelectedTabTapped 调用。 */
     onPreviewEnded: (() -> Unit)? = null,
     tintRefractionContent: Boolean = true,
+    /** 栏玻璃高光覆盖（全局边缘光）；null = 库默认 Highlight.Default（旧观感）。 */
+    highlight: (() -> Highlight?)? = null,
+    /** 栏玻璃内晕覆盖；null = 无（旧观感）。 */
+    innerShadow: (() -> InnerShadow?)? = null,
     content: @Composable RowScope.() -> Unit,
     overlayContent: (@Composable RowScope.() -> Unit)? = null
 ) {
@@ -276,6 +281,8 @@ fun LiquidBottomTabs(
                                 24f.dp.toPx() * refractionAmountScale
                             )
                         },
+                        highlight = { highlight?.invoke() ?: Highlight.Default },
+                        innerShadow = innerShadow,
                         layerBlock = {
                             val progress = dampedDragAnimation.pressProgress
                             val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)

@@ -51,6 +51,7 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
     val config = ConfigController.remember()
     val c = config.config
     val valueFmt = stringResource(R.string.bar_value_dp_fmt)
+    val dp1Fmt = stringResource(R.string.bar_value_dp1_fmt)
     val pctFmt = stringResource(R.string.bar_value_pct_fmt)
     val timesFmt = stringResource(R.string.bar_value_times_fmt)
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -317,6 +318,130 @@ fun BarStyleScreenMaterial(onBack: () -> Unit) {
                                 )
                             },
                             onCommit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
+                        )
+                    },
+                ),
+            )
+
+            SegmentedColumn(
+                title = stringResource(R.string.bar_section_edge_glow),
+                content = listOf(
+                    {
+                        SegmentedSwitchItem(
+                            title = stringResource(R.string.bar_edge_glow),
+                            checked = c.barEdgeGlow,
+                            enabled = ServiceBridge.bound,
+                            onCheckedChange = { config.commit(config.config.copy(barEdgeGlow = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_edge_width)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barEdgeWidthDp,
+                            valueRange = 0f..4f,
+                            valueText = { String.format(dp1Fmt, it) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..4f,
+                                    format = { String.format(dp1Fmt, it) },
+                                    toEditable = { it.toString() },
+                                    parse = { it.toFloatOrNull()?.coerceIn(0f, 4f) },
+                                    current = c.barEdgeWidthDp,
+                                    commit = { config.commit(config.config.copy(barEdgeWidthDp = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barEdgeWidthDp = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_edge_blur)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barEdgeBlurDp,
+                            valueRange = 0f..2f,
+                            valueText = { String.format(dp1Fmt, it) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..2f,
+                                    format = { String.format(dp1Fmt, it) },
+                                    toEditable = { it.toString() },
+                                    parse = { it.toFloatOrNull()?.coerceIn(0f, 2f) },
+                                    current = c.barEdgeBlurDp,
+                                    commit = { config.commit(config.config.copy(barEdgeBlurDp = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barEdgeBlurDp = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_edge_alpha)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barEdgeAlpha,
+                            valueRange = 0f..1f,
+                            valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..1f,
+                                    format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    toEditable = { (it * 100).roundToInt().toString() },
+                                    parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) },
+                                    current = c.barEdgeAlpha,
+                                    commit = { config.commit(config.config.copy(barEdgeAlpha = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barEdgeAlpha = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_inner_glow_radius)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barInnerGlowRadiusDp,
+                            valueRange = 0f..24f,
+                            valueText = { String.format(valueFmt, it.roundToInt()) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..24f,
+                                    format = { String.format(valueFmt, it.roundToInt()) },
+                                    toEditable = { it.roundToInt().toString() },
+                                    parse = { it.toFloatOrNull()?.coerceIn(0f, 24f) },
+                                    current = c.barInnerGlowRadiusDp,
+                                    commit = { config.commit(config.config.copy(barInnerGlowRadiusDp = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barInnerGlowRadiusDp = it)) },
+                        )
+                    },
+                    {
+                        val title = stringResource(R.string.bar_inner_glow_alpha)
+                        SegmentedSliderItem(
+                            title = title,
+                            value = c.barInnerGlowAlpha,
+                            valueRange = 0f..1f,
+                            valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                            enabled = ServiceBridge.bound,
+                            onValueTextClick = {
+                                editing = BarValueEditor(
+                                    title = title,
+                                    range = 0f..1f,
+                                    format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    toEditable = { (it * 100).roundToInt().toString() },
+                                    parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) },
+                                    current = c.barInnerGlowAlpha,
+                                    commit = { config.commit(config.config.copy(barInnerGlowAlpha = it)) },
+                                )
+                            },
+                            onCommit = { config.commit(config.config.copy(barInnerGlowAlpha = it)) },
                         )
                     },
                 ),

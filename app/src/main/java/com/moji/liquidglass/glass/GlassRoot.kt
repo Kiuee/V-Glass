@@ -65,6 +65,7 @@ import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.shapes.Capsule
 import com.moji.liquidglass.glass.components.LocalLiquidBottomTabBubbleCovered
 import com.moji.liquidglass.glass.components.LocalTabPreviewIndex
@@ -451,6 +452,26 @@ fun GlassRoot(
         // size = 栏高、aspectRatio 1f 外接方盒 + CircleShape 圆形玻璃）。声明时栏宽
         // 可用量扣除 按钮直径（= 栏高）+ 间距；通道 null 时布局与旧实现逐位不变（§0.4 红线）。
         val actionButton = session.extractor.descriptor.extraActionButton
+        // 全局边缘光/内晕（I2，样式页可调）：借鉴 COUI 浮动材质的 edge/innerGlow，
+        // 用 Kyant Highlight + InnerShadow 承载。关闭 = 原 Highlight.Default、无内晕。
+        val edgeHighlight = if (style.edgeGlow) {
+            Highlight(
+                width = style.edgeWidthDp.dp,
+                blurRadius = style.edgeBlurDp.dp,
+                alpha = style.edgeAlpha,
+            )
+        } else {
+            null
+        }
+        val edgeInnerShadow = if (style.edgeGlow) {
+            InnerShadow(
+                radius = style.innerGlowRadiusDp.dp,
+                color = Color.White,
+                alpha = style.innerGlowAlpha,
+            )
+        } else {
+            null
+        }
         val barWidth = min(
             maxWidth - style.minHorizontalMarginDp.dp * 2 -
                 (if (actionButton != null) style.barHeightDp.dp + 8.dp else 0.dp),
@@ -549,6 +570,16 @@ fun GlassRoot(
                     // 液泡折射副本整层强调色 tint：选中/悬停 tab 在液泡内呈强调色，观感全局一致；
                     // 描述符可关（vivo 官网等"白=底色"编码素材必须关，否则白间隙被染成强调色实心）
                     tintRefractionContent = session.extractor.descriptor.tintRefractionContent,
+                    highlight = if (edgeHighlight != null) {
+                        { edgeHighlight }
+                    } else {
+                        null
+                    },
+                    innerShadow = if (edgeInnerShadow != null) {
+                        { edgeInnerShadow }
+                    } else {
+                        null
+                    },
                     content = {
                         // 标签强调色：选中 tab 与拖动悬停预览 tab 用应用强调色，其余内容色。
                         // 旧版该反馈由折射副本整层染色承担；tintRefractionContent=false 的
@@ -764,7 +795,15 @@ fun GlassRoot(
             // 附加操作按钮：栏右侧独立圆形着色玻璃图标按钮（参考项目教程同构：
             // Row spacedBy(8dp) + 等高 CircleShape 圆形 + aspectRatio 1f 外接盒）
             if (actionButton != null) {
-                ExtraActionButton(actionButton, buttonBackdrop, style, tick, style.barHeightDp.dp)
+                ExtraActionButton(
+                    spec = actionButton,
+                    backdrop = buttonBackdrop,
+                    style = style,
+                    tick = tick,
+                    diameter = style.barHeightDp.dp,
+                    edgeHighlight = edgeHighlight,
+                    innerShadow = edgeInnerShadow,
+                )
             }
         }
         }
@@ -819,6 +858,8 @@ private fun ExtraActionButton(
     style: GlassStyle,
     tick: IntState,
     diameter: androidx.compose.ui.unit.Dp,
+    edgeHighlight: Highlight?,
+    innerShadow: InnerShadow?,
 ) {
     val animationScope = rememberCoroutineScope()
     // 交互驱动 = 参考项目 catalog LiquidButton 原版：InteractiveHighlight（本项目一比一
@@ -866,7 +907,23 @@ private fun ExtraActionButton(
                             maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
                             (height / width).fastCoerceAtMost(1f)
                 },
-                highlight = { Highlight.Default.copy(alpha = interactiveHighlight.pressProgress) },
+                highlight = {
+                    if (edgeHighlight != null) {
+                        // 全局边缘光：常态可见，按压继续提亮到 1。
+                        edgeHighlight.copy(
+                            alpha = (edgeHighlight.alpha +
+                                (1f - edgeHighlight.alpha) * interactiveHighlight.pressProgress)
+                                .coerceIn(0f, 1f)
+                        )
+                    } else {
+                        Highlight.Default.copy(alpha = interactiveHighlight.pressProgress)
+                    }
+                },
+                innerShadow = if (innerShadow != null) {
+                    { innerShadow }
+                } else {
+                    null
+                },
                 onDrawSurface = {
                     spec.accent()?.let { tint ->
                         drawRect(tint, blendMode = BlendMode.Hue)

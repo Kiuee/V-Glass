@@ -73,6 +73,7 @@ fun BarStyleScreenMiuix(onBack: () -> Unit) {
     val config = ConfigController.remember()
     val c = config.config
     val valueFmt = stringResource(R.string.bar_value_dp_fmt)
+    val dp1Fmt = stringResource(R.string.bar_value_dp1_fmt)
     val pctFmt = stringResource(R.string.bar_value_pct_fmt)
     val timesFmt = stringResource(R.string.bar_value_times_fmt)
 
@@ -343,6 +344,118 @@ fun BarStyleScreenMiuix(onBack: () -> Unit) {
                                         )
                                     },
                                     onCommit = { config.commit(config.config.copy(barRefractionHeightScale = it)) },
+                                )
+                            }
+                        }
+
+                        MiuixSectionTitle(stringResource(R.string.bar_section_edge_glow))
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(vertical = 6.dp)) {
+                                SwitchPreference(
+                                    title = stringResource(R.string.bar_edge_glow),
+                                    checked = c.barEdgeGlow,
+                                    enabled = ServiceBridge.bound,
+                                    onCheckedChange = { config.commit(config.config.copy(barEdgeGlow = it)) },
+                                )
+                                val edgeWidthTitle = stringResource(R.string.bar_edge_width)
+                                MiuixSliderRow(
+                                    title = edgeWidthTitle,
+                                    value = c.barEdgeWidthDp,
+                                    range = 0f..4f,
+                                    valueText = { String.format(dp1Fmt, it) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = edgeWidthTitle,
+                                            range = 0f..4f,
+                                            format = { String.format(dp1Fmt, it) },
+                                            toEditable = { it.toString() },
+                                            parse = { it.toFloatOrNull()?.coerceIn(0f, 4f) },
+                                            current = c.barEdgeWidthDp,
+                                            commit = { config.commit(config.config.copy(barEdgeWidthDp = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barEdgeWidthDp = it)) },
+                                )
+                                val edgeBlurTitle = stringResource(R.string.bar_edge_blur)
+                                MiuixSliderRow(
+                                    title = edgeBlurTitle,
+                                    value = c.barEdgeBlurDp,
+                                    range = 0f..2f,
+                                    valueText = { String.format(dp1Fmt, it) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = edgeBlurTitle,
+                                            range = 0f..2f,
+                                            format = { String.format(dp1Fmt, it) },
+                                            toEditable = { it.toString() },
+                                            parse = { it.toFloatOrNull()?.coerceIn(0f, 2f) },
+                                            current = c.barEdgeBlurDp,
+                                            commit = { config.commit(config.config.copy(barEdgeBlurDp = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barEdgeBlurDp = it)) },
+                                )
+                                val edgeAlphaTitle = stringResource(R.string.bar_edge_alpha)
+                                MiuixSliderRow(
+                                    title = edgeAlphaTitle,
+                                    value = c.barEdgeAlpha,
+                                    range = 0f..1f,
+                                    valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = edgeAlphaTitle,
+                                            range = 0f..1f,
+                                            format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                            toEditable = { (it * 100).roundToInt().toString() },
+                                            parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) },
+                                            current = c.barEdgeAlpha,
+                                            commit = { config.commit(config.config.copy(barEdgeAlpha = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barEdgeAlpha = it)) },
+                                )
+                                val innerRadiusTitle = stringResource(R.string.bar_inner_glow_radius)
+                                MiuixSliderRow(
+                                    title = innerRadiusTitle,
+                                    value = c.barInnerGlowRadiusDp,
+                                    range = 0f..24f,
+                                    valueText = { String.format(valueFmt, it.roundToInt()) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = innerRadiusTitle,
+                                            range = 0f..24f,
+                                            format = { String.format(valueFmt, it.roundToInt()) },
+                                            toEditable = { it.roundToInt().toString() },
+                                            parse = { it.toFloatOrNull()?.coerceIn(0f, 24f) },
+                                            current = c.barInnerGlowRadiusDp,
+                                            commit = { config.commit(config.config.copy(barInnerGlowRadiusDp = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barInnerGlowRadiusDp = it)) },
+                                )
+                                val innerAlphaTitle = stringResource(R.string.bar_inner_glow_alpha)
+                                MiuixSliderRow(
+                                    title = innerAlphaTitle,
+                                    value = c.barInnerGlowAlpha,
+                                    range = 0f..1f,
+                                    valueText = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                    enabled = ServiceBridge.bound,
+                                    onValueTextClick = {
+                                        editing = BarValueEditor(
+                                            title = innerAlphaTitle,
+                                            range = 0f..1f,
+                                            format = { String.format(pctFmt, (it * 100).roundToInt()) },
+                                            toEditable = { (it * 100).roundToInt().toString() },
+                                            parse = { it.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f) },
+                                            current = c.barInnerGlowAlpha,
+                                            commit = { config.commit(config.config.copy(barInnerGlowAlpha = it)) },
+                                        )
+                                    },
+                                    onCommit = { config.commit(config.config.copy(barInnerGlowAlpha = it)) },
                                 )
                             }
                         }

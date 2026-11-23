@@ -40,6 +40,19 @@ data class ModuleConfig(
     val barRefractionHeightScale: Float = 0.50f,
     /** 是否显示 tab 文字标签。 */
     val barShowLabels: Boolean = true,
+    /** 全局玻璃栏边缘光/内晕（实验，默认开）：借鉴 COUI 浮动材质的 edge/innerGlow，
+     *  用 Kyant Highlight + InnerShadow 承载；关闭 = 原 Highlight.Default 且无内晕。 */
+    val barEdgeGlow: Boolean = true,
+    /** 边缘光宽度（dp）：Highlight 描边宽度，0 = 无边缘光。默认 1.5。 */
+    val barEdgeWidthDp: Float = 1.5f,
+    /** 边缘光宽化（dp）：Highlight 描边模糊半径，0 = 硬边。默认 0.75。 */
+    val barEdgeBlurDp: Float = 0.75f,
+    /** 边缘光强度（0~1）：Highlight alpha，0 = 无边缘光。默认 0.22。 */
+    val barEdgeAlpha: Float = 0.22f,
+    /** 内晕半径（dp）：InnerShadow radius，0 = 无内晕。默认 10。 */
+    val barInnerGlowRadiusDp: Float = 10f,
+    /** 内晕强度（0~1）：InnerShadow alpha，0 = 无内晕。默认 0.35。 */
+    val barInnerGlowAlpha: Float = 0.35f,
     /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
      *  商店等默认路径不受影响。视觉异常时可远程配置改为 false 关闭。 */
     val lightweightSampling: Boolean = true,
@@ -57,8 +70,8 @@ data class ModuleConfig(
     fun appEnabledFor(packageName: String): Boolean = appEnabled[packageName] ?: true
 
     /** 样式页"还原默认"：仅把样式页可调的参数恢复为 [DEFAULT]（边距/间隙/栏高/模糊/
-     *  表面色/饱和度/折射量/折射高度/文字标签），保留开关、内容延伸、按应用开关等
-     *  非样式字段。 */
+     *  表面色/饱和度/折射量/折射高度/文字标签/边缘光与内晕），保留开关、内容延伸、
+     *  按应用开关等非样式字段。 */
     fun withBarStyleDefaults(): ModuleConfig = copy(
         barMarginDp = DEFAULT.barMarginDp,
         barBottomGapDp = DEFAULT.barBottomGapDp,
@@ -69,6 +82,12 @@ data class ModuleConfig(
         barRefractionAmountScale = DEFAULT.barRefractionAmountScale,
         barRefractionHeightScale = DEFAULT.barRefractionHeightScale,
         barShowLabels = DEFAULT.barShowLabels,
+        barEdgeGlow = DEFAULT.barEdgeGlow,
+        barEdgeWidthDp = DEFAULT.barEdgeWidthDp,
+        barEdgeBlurDp = DEFAULT.barEdgeBlurDp,
+        barEdgeAlpha = DEFAULT.barEdgeAlpha,
+        barInnerGlowRadiusDp = DEFAULT.barInnerGlowRadiusDp,
+        barInnerGlowAlpha = DEFAULT.barInnerGlowAlpha,
     )
     fun toJson(): String {
         val root = JSONObject()
@@ -83,6 +102,12 @@ data class ModuleConfig(
         root.put("barRefractionAmountScale", barRefractionAmountScale.toDouble())
         root.put("barRefractionHeightScale", barRefractionHeightScale.toDouble())
         root.put("barShowLabels", barShowLabels)
+        root.put("barEdgeGlow", barEdgeGlow)
+        root.put("barEdgeWidthDp", barEdgeWidthDp.toDouble())
+        root.put("barEdgeBlurDp", barEdgeBlurDp.toDouble())
+        root.put("barEdgeAlpha", barEdgeAlpha.toDouble())
+        root.put("barInnerGlowRadiusDp", barInnerGlowRadiusDp.toDouble())
+        root.put("barInnerGlowAlpha", barInnerGlowAlpha.toDouble())
         root.put("lightweightSampling", lightweightSampling)
         root.put("idleFrameSleep", idleFrameSleep)
         if (appEnabled.isNotEmpty()) {
@@ -136,6 +161,12 @@ data class ModuleConfig(
                     else -> 0.35f
                 },
                     barShowLabels = root.optBoolean("barShowLabels", true),
+                    barEdgeGlow = root.optBoolean("barEdgeGlow", true),
+                    barEdgeWidthDp = root.optDouble("barEdgeWidthDp", 1.5).toFloat(),
+                    barEdgeBlurDp = root.optDouble("barEdgeBlurDp", 0.75).toFloat(),
+                    barEdgeAlpha = root.optDouble("barEdgeAlpha", 0.22).toFloat(),
+                    barInnerGlowRadiusDp = root.optDouble("barInnerGlowRadiusDp", 10.0).toFloat(),
+                    barInnerGlowAlpha = root.optDouble("barInnerGlowAlpha", 0.35).toFloat(),
                     lightweightSampling = root.optBoolean("lightweightSampling", true),
                     idleFrameSleep = root.optBoolean("idleFrameSleep", true),
                     appEnabled = root.optJSONObject("appEnabled")?.let { apps ->
