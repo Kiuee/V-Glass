@@ -132,7 +132,7 @@ object HeyboxAdapter : AppAdapter {
     override val targetPackage: String = "com.max.xiaoheihe"
     override val displayName: String = "小黑盒"
     override val tabActivityClassName: String? = TAB_ACTIVITY
-    override val baselineVersions: List<String> = listOf("1.3.399", "1.3.400", "1.3.401")
+    override val baselineVersions: List<String> = listOf("1.3.399", "1.3.400", "1.3.401", "1.3.402")
 
     private const val TAB_ACTIVITY = "com.max.xiaoheihe.MainActivity"
     private const val HOST_CLASS = "com.max.xiaoheihe.MainActivity"

@@ -1,32 +1,19 @@
 package com.moji.liquidglass.ui.theme
 
-import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import com.moji.liquidglass.ui.prefs.ManagerPrefs
 
 /**
- * 应用主题入口：按 UiMode 分发 Material / Miuix 双风格实现，
- * 并通过 CompositionLocal 下发模糊、悬浮底栏等界面效果开关（低版本系统自动降级）。
+ * 应用主题入口：material-kolor 动态色板 + M3 MaterialTheme + COUI 的 LocalCouiDarkTheme。
+ * COUI 默认外观策略由 GlassApp 中的 Coui.initialize(CouiMaterial3Style()) 固定，
+ * 组件在消费处读取本处 MaterialTheme，因此不需要（也不能）再包一层 CouiTheme 原生色板。
  */
 @Composable
 fun LiquidGlassTheme(
     appSettings: AppSettings,
-    uiMode: UiMode,
     content: @Composable () -> Unit,
 ) {
-    // miuix-blur 的效果链基于 AGSL（API 33+），与 hook 注入门槛一致
-    val blurCapable = Build.VERSION.SDK_INT >= 33
-    CompositionLocalProvider(
-        LocalUiMode provides uiMode,
-        LocalColorMode provides appSettings.colorMode.value,
-        LocalEnableBlur provides (ManagerPrefs.enableBlur && blurCapable),
-        LocalEnableFloatingBottomBar provides ManagerPrefs.floatingBottomBar,
-        LocalEnableFloatingBottomBarBlur provides (ManagerPrefs.floatingBottomBarBlur && blurCapable),
-    ) {
-        when (uiMode) {
-            UiMode.Material -> MaterialTemplateTheme(appSettings, content)
-            UiMode.Miuix -> MiuixTemplateTheme(appSettings, content)
-        }
+    CompositionLocalProvider(LocalColorMode provides appSettings.colorMode.value) {
+        MaterialTemplateTheme(appSettings, content)
     }
 }

@@ -16,9 +16,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
-import com.moji.liquidglass.ui.theme.LocalUiMode
-import com.moji.liquidglass.ui.theme.UiMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private val AppIconSize = 48.dp
 
@@ -37,7 +34,7 @@ internal fun rememberAppIcon(packageName: String): ImageBitmap? {
     }
 }
 
-/** 应用图标：命中显示位图，未安装显示圆角底占位（对齐参考项目超级用户页 PlaceHolderBox）。 */
+/** 应用图标：命中显示位图，未安装显示圆角底占位。 */
 @Composable
 internal fun AppIconImage(
     packageName: String,
@@ -48,15 +45,11 @@ internal fun AppIconImage(
     if (icon != null) {
         Image(bitmap = icon, contentDescription = contentDescription, modifier = modifier)
     } else {
-        val container = when (LocalUiMode.current) {
-            UiMode.Miuix -> MiuixTheme.colorScheme.secondaryContainer
-            UiMode.Material -> MaterialTheme.colorScheme.secondaryContainer
-        }
         Box(
             modifier = modifier
                 .padding(4.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(container),
+                .background(MaterialTheme.colorScheme.secondaryContainer),
         )
     }
 }

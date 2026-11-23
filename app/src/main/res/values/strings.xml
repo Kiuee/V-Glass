@@ -33,8 +33,6 @@
     <string name="usage_step_1">在 LSPosed 启用本模块并勾选作用域</string>
     <string name="usage_step_2">强制停止目标应用后重新打开</string>
     <string name="usage_step_3">关闭开关后重启目标应用即可还原</string>
-    <string name="about_requirement">需要 Android 13（API 33）及以上</string>
-    <string name="about_diagnostics">诊断：logcat 过滤 tag \"LiquidGlass\"</string>
 
     <!-- 应用页 -->
     <string name="feature_group">功能</string>
@@ -61,35 +59,29 @@
 
     <!-- 设置页 -->
     <string name="interface_group">界面</string>
-    <string name="ui_mode">界面风格</string>
-    <string name="ui_mode_summary">Miuix 悬浮玻璃或 Material Expressive</string>
     <string name="theme_settings">主题</string>
-    <string name="theme_settings_summary">颜色模式、主色与调色板</string>
+    <string name="theme_settings_summary">颜色模式、Material 主题与轮廓光</string>
     <string name="bar_style">玻璃栏样式</string>
     <string name="bar_style_summary">边距、间隙、栏高、模糊与折射</string>
     <string name="other_group">其他</string>
-    <string name="about_page">关于</string>
-    <string name="about_version_fmt">版本 %1$s</string>
 
     <!-- 主题设置页 -->
     <string name="theme_page">主题</string>
-    <string name="key_color">主色</string>
-    <string name="key_color_dynamic">动态取色</string>
     <string name="color_mode_system">系统</string>
     <string name="color_mode_light">浅色</string>
     <string name="color_mode_dark">深色</string>
     <string name="color_mode_dark_amoled">纯黑</string>
-    <string name="palette_style">调色板风格</string>
-    <string name="color_spec">色彩规范</string>
-    <string name="miuix_monet">Miuix 动态取色</string>
-    <string name="miuix_monet_summary">Miuix 风格下启用 Monet 动态色</string>
-    <string name="effects_group">界面效果</string>
-    <string name="enable_blur">界面模糊</string>
-    <string name="enable_blur_summary">顶栏与底栏毛玻璃</string>
-    <string name="floating_bottom_bar">悬浮底栏</string>
-    <string name="floating_bottom_bar_summary">导航栏悬浮为玻璃胶囊</string>
-    <string name="floating_bottom_bar_blur">底栏折射</string>
-    <string name="floating_bottom_bar_blur_summary">底栏实时折射内容，更耗电</string>
+    <string name="theme_section_appearance">外观</string>
+    <string name="theme_section_theme">主题</string>
+    <string name="theme_section_top_bar">顶栏</string>
+    <string name="material_theme">Material 主题</string>
+    <string name="material_theme_summary">使用 Material 3 系统动态配色</string>
+    <string name="contour">轮廓光</string>
+    <string name="contour_summary">玻璃组件边缘轮廓光</string>
+    <string name="compose_progressive_blur">顶栏渐进模糊</string>
+    <string name="compose_progressive_blur_summary">关闭后改用 COUI 后端</string>
+    <string name="reset_appearance">重置外观</string>
+    <string name="reset_appearance_message">恢复系统颜色模式、原生 COUI 与轮廓光/渐进模糊开关</string>    <string name="effects_group">界面效果</string>
 
     <!-- 主色颜色名（Miuix 下拉用） -->
     <string name="color_red">红</string>
@@ -139,4 +131,10 @@
     <string name="bar_value_edit_range">允许范围：%1$s ~ %2$s</string>
     <string name="action_confirm">确定</string>
     <string name="action_cancel">取消</string>
+    <string name="about_app">关于应用</string>
+    <string name="about_version_title">版本</string>
+    <string name="about_github">GitHub</string>
+    <string name="about_github_repo">Kiuee/V-Glass</string>
+    <string name="about_hero_brand">V-Glass</string>
+    <string name="about_coui_version">COUI 版本</string>
 </resources>

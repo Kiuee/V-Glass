@@ -15,7 +15,9 @@ val keystoreProps = Properties().apply {
 android {
     namespace = "com.moji.liquidglass"
     compileSdk {
-        version = release(37)
+        version = release(37) {
+            minorApiLevel = 1
+        }
     }
 
     signingConfigs {
@@ -31,10 +33,10 @@ android {
 
     defaultConfig {
         applicationId = "com.moji.liquidglass"
-        minSdk = 26
+        minSdk = 33
         targetSdk = 37
-        versionCode = 91
-        versionName = "2.9.62"
+        versionCode = 116
+        versionName = "2.9.87"
     }
 
     buildTypes {
@@ -50,8 +52,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
         compose = true
@@ -74,23 +76,17 @@ dependencies {
     // shapes 在 backdrop 的 POM 中是 runtime 作用域，编译期需要显式声明（Capsule 形状）
     implementation(libs.kyant.shapes)
 
-    implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.animation)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.activity.compose)
-    // miuix 弹层（OverlayDropdownPopup 等）的返回键关闭依赖 navigationevent，
-    // 且要求 Activity 侧提供 NavigationEventDispatcherOwner（activity 1.11+ 自带）
-    implementation(libs.androidx.navigationevent.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    // 动态色板（PaletteStyle / ColorSpec / AMOLED）
-    implementation(libs.material.kolor)
-    // Miuix 风格组件库（KMP android 变体）
-    implementation(libs.miuix.ui)
-    implementation(libs.miuix.icons)
-    implementation(libs.miuix.preference)
-    implementation(libs.miuix.blur)
+    // COUI-Kit：管理器本体 UI（核心 + Material 3 适配）
+    implementation(libs.coui)
+    implementation(libs.coui.icons)
+    implementation(libs.coui.material3)
 }

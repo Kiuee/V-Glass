@@ -6,11 +6,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.Dp
 import com.moji.liquidglass.R
 import com.moji.liquidglass.ui.ServiceBridge
-import com.moji.liquidglass.ui.theme.LocalUiMode
-import com.moji.liquidglass.ui.theme.UiMode
 
 /** LSPosed 服务状态（对齐参考项目 HomeUiState 的三态结构：运行中 / 等待 / 异常）。 */
 @Immutable
@@ -117,14 +114,5 @@ internal fun rememberHomeSystemInfo(): HomeSystemInfo {
             deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
             frameworkVersion = service?.let { "${it.frameworkName} ${it.frameworkVersion}" } ?: "",
         )
-    }
-}
-
-/** 主页分发器。 */
-@Composable
-fun HomePager(bottomInnerPadding: Dp) {
-    when (LocalUiMode.current) {
-        UiMode.Material -> HomePagerMaterial(bottomInnerPadding)
-        UiMode.Miuix -> HomePagerMiuix(bottomInnerPadding)
     }
 }
