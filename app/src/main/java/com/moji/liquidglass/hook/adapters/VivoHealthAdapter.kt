@@ -11,7 +11,7 @@ import com.moji.liquidglass.hook.HookFacade
 import java.lang.ref.WeakReference
 
 /**
- * vivo 健康（com.vivo.health，桌面名"健康"，版本 7.1.3.13 取证）适配器。
+ * vivo 健康（com.vivo.health，桌面名"健康"，版本 7.1.3.23 取证，兼容窗口含 7.1.3.13）适配器。
  *
  * - 主页链路：launcher = GuideActivity（引导/隐私页，跳转主界面），主 Tab Activity =
  *   [TAB_ACTIVITY]。布局 `activity_main.xml`：ConstraintLayout > 全屏 ViewPager2
@@ -30,7 +30,8 @@ import java.lang.ref.WeakReference
  *   3~4 个 tab（健康/设备/我的 + 运动仅 VivoHealthFavor 或计步组件在装时经 n() 追加）。
  * - 选中机制：VNavMenuItem 有**真 `setChecked(boolean)`**（public，纯视觉翻转 + 末尾
  *   setSelected(z2)，标准 isSelected 读数），无需声明 itemCheckedSetterMethodName。
- * - 换图（图标双路径，均存底栏字段 F 的 LottieAttribute 映射，条目 → 图标对）：
+ * - 换图（图标双路径，均存底栏 LottieAttribute 映射 `Map<VNavMenuItem, LottieAttribute>`
+ *   ——7.1.3.23 字段名 `p`、7.1.3.13 字段名 `F`，条目 → 图标对）：
  *   ① ROM16 动态符号路径（FontSymbolHelper.i()）：n() 添加 FontSymbolDrawable 对
  *   （选中=主题色、未选中=灰）；② 旧路径：l() 添加 静态未选中 res + 主题色染色的
  *   selected_anim Lottie。应用点击换图 = 未选 r(item) / 选中 O(item)（**携带
@@ -61,7 +62,7 @@ object VivoHealthAdapter : AppAdapter {
     override val targetPackage: String = "com.vivo.health"
     override val displayName: String = "vivo 健康"
     override val tabActivityClassName: String? = TAB_ACTIVITY
-    override val baselineVersions: List<String> = listOf("7.1.3.13")
+    override val baselineVersions: List<String> = listOf("7.1.3.13", "7.1.3.23")
 
     private const val TAB_ACTIVITY = "com.vivo.health.main.activity.MainActivity"
     // 底栏（应用自有子类，非混淆）与其在 activity_main.xml 中的资源 id（类名失配兜底）
@@ -72,10 +73,12 @@ object VivoHealthAdapter : AppAdapter {
     // originui 库公共元素 id（与相册/文件管理/手机管家同库同命名）
     private const val ICON_ID_NAME = "vivo_navigation_bar_item_icon_view"
     private const val LABELS_ID_NAME = "vivo_navigation_bar_item_labels_group"
-    // originui 库 VBottomNavigationView 的换图方法（public，非混淆；条目参数类型 VNavMenuItem）
-    private const val BAR_CLASS_ORIGIN = "com.originui.widget.navigation.VBottomNavigationView"
-    private const val ITEM_CLASS_ORIGIN =
-        "com.originui.widget.navigation.navigation.VNavMenuItem"
+    // 图标对映射字段候选（沿底栏超类链按「字段名为 Map」判定）：7.1.3.23 = p，
+    // 7.1.3.13 = F（库升版字段重排；两版菜单监听映射分别位于 q/G，勿混）
+    private val ICON_PAIR_MAP_FIELD_CANDIDATES = listOf("p", "F")
+    // 选中动画器字段候选（沿条目超类链按「字段类型 = ValueAnimator」判定）：
+    // 7.1.3.23 = u，7.1.3.13 = K（库升版字段重排，同版本 K 已改为 int 徽标半径）
+    private val SELECTION_ANIMATOR_FIELD_CANDIDATES = listOf("u", "K")
 
     // —— 压制运行期状态（弱引用防泄漏；原状态供会话还原） ——
     @Volatile private var barRef: WeakReference<View>? = null
@@ -90,6 +93,9 @@ object VivoHealthAdapter : AppAdapter {
      *  新实例会让幂等判据失效而逐帧重挂）。恢复期主题重放清 res 缓存重建。 */
     private val iconViewCache = java.util.WeakHashMap<View, android.widget.ImageView?>()
     private val settledResCache = java.util.WeakHashMap<Int, android.graphics.drawable.Drawable>()
+
+    /** 图标对映射字段实际命中名的单次日志守卫（升版核对 logcat 用）。 */
+    @Volatile private var iconPairFieldLogged = false
 
     private class DecorationState(
         val view: View,
@@ -356,24 +362,32 @@ object VivoHealthAdapter : AppAdapter {
 
     /** 预览翻转后的图标过渡动画瞬时落定（2.9.47 滑动切换瞬间光斑/提亮闪烁修复）：
      *  originui `VNavMenuItem.setChecked` 末尾 `x(1.0f/0.0f)` 对挂载条目启动
-     *  `motionDurationLong1` (~250ms、FastOutSlowIn) `ValueAnimator`（字段真名 `K`，
-     *  public）驱动图标缩放过渡（`D(f,f)` → 辅助器 `L.d(f,f,iconView)` 写落定），每次
-     *  翻转重播、被逐 tick 镜像 = 每次切换一次图标"呼吸"式亮度跳变（深色放大）。
-     *  本方法取消在飞动画器并反射 `D(float,float)`（public final，jadx 方法体实证：
-     *  `L.d(f2,f3,view)` + `M=f2` 进度记录）以 (end,end) 瞬时写落定——同栈赶在下一个
-     *  采样 tick 前，镜像只见落定帧，与引擎"悬停 = 动画末帧落定外观"预览语义一致。
-     *  锚点沿超类链查找（子类 HealthBottomNavigationView 不改声明）；任一环节失败
-     *  静默（表现 = 动画照播，与既有行为一致，无回归面）。 */
+     *  `motionDurationLong1` (~250ms、FastOutSlowIn) `ValueAnimator`（选中动画器字段，
+     *  7.1.3.23 真名 `u` / 7.1.3.13 真名 `K`；两版均 public、类型 ValueAnimator——库升版
+     *  字段整体重排，同版本 `K` 已改为 int 徽标半径）驱动选中过渡（`D(f,f)` → 辅助器
+     *  `v.d(f,f,view)` 写落定），每次翻转重播、被逐 tick 镜像 = 每次切换一次"呼吸"式
+     *  亮度跳变（深色放大）。本方法取消在飞动画器并反射 `D(float,float)`（两版均
+     *  public final，jadx 方法体实证：`v.d(f2,f3,k)` + `w=f2` 进度记录）以 (end,end)
+     *  瞬时写落定——同栈赶在下一个采样 tick 前，镜像只见落定帧，与引擎"悬停 = 动画末帧
+     *  落定外观"预览语义一致。锚点沿超类链按「字段类型 = ValueAnimator」判定（子类
+     *  HealthBottomNavigationView 不改声明）；任一环节失败静默（表现 = 动画照播，与既有
+     *  行为一致，无回归面）。 */
     private fun snapSelectionAnimation(session: GlassSession, index: Int, checked: Boolean) {
         val item = session.tabViews.getOrNull(index) ?: return
         val end = if (checked) 1f else 0f
         runCatching {
-            val field = generateSequence<Class<*>>(item.javaClass) { it.superclass }
+            val animatorField = generateSequence<Class<*>>(item.javaClass) { it.superclass }
                 .firstNotNullOfOrNull { cls ->
-                    runCatching { cls.getDeclaredField("K").apply { isAccessible = true } }
-                        .getOrNull()
+                    SELECTION_ANIMATOR_FIELD_CANDIDATES.firstNotNullOfOrNull { name ->
+                        runCatching { cls.getDeclaredField(name) }.getOrNull()
+                            ?.takeIf {
+                                android.animation.ValueAnimator::class.java
+                                    .isAssignableFrom(it.type)
+                            }
+                    }
                 }
-            (field?.get(item) as? android.animation.ValueAnimator)?.cancel()
+            animatorField?.isAccessible = true
+            (animatorField?.get(item) as? android.animation.ValueAnimator)?.cancel()
         }
         runCatching {
             val snap = generateSequence<Class<*>>(item.javaClass) { it.superclass }
@@ -436,7 +450,8 @@ object VivoHealthAdapter : AppAdapter {
      *  恢复未选中落定）：以条目 `isSelected` 为**唯一真值源**，把全部条目的 iconView
      *  收敛到期望落定 drawable（`drawable === desired` 引用相等 = 已就位零写入，天然
      *  幂等）。仅 [GlassSession.isTabPreviewActive] 期间执行——正式切页的应用换图不被
-     *  顶掉。期望实例来自底栏字段 `F`（`Map<VNavMenuItem, LottieAttribute>`，每次实时
+     *  顶掉。期望实例来自底栏图标对映射（`Map<VNavMenuItem, LottieAttribute>`，7.1.3.23
+     *  字段 `p` / 7.1.3.13 字段 `F`，每次实时
      *  解析——换主题 HealthThemeManager → a0/s0 重放会整体重建映射，映射重建 = 新实例
      *  → 引用失配 → 下一帧自动重挂，自愈）：
      *  - checked → 选中符号 `i`（已由 [preDriveSelectedSymbols] 预驱动到落定进度，挂载
@@ -506,15 +521,28 @@ object VivoHealthAdapter : AppAdapter {
         }
     }
 
-    /** 反射读底栏图标对映射（字段真名 `F`：条目 → LottieAttribute；本应用 originui 库
-     *  未混淆，jadx 无 renamed-from 注释即运行时真名）。映射或条目缺失返回 null。 */
+    /** 反射读底栏图标对映射（条目 → LottieAttribute；7.1.3.23 字段名 `p` / 7.1.3.13
+     *  字段名 `F`——originui 库升版字段整体重排，同版本 `q`/`G` 为菜单点击监听映射，
+     *  不是图标对）。候选按名 + 「字段类型 = Map」判定，沿底栏超类链查找（不锚库类名）；
+     *  映射或条目缺失返回 null（静默降级，无崩溃面）。 */
     private fun iconPairOf(bar: View, item: View): Any? {
         return runCatching {
-            val barClass = Class.forName(BAR_CLASS_ORIGIN, true, bar.context.classLoader)
-            val map = barClass.getDeclaredField("F")
-                .apply { isAccessible = true }
-                .get(bar) as? Map<*, *>
-            map?.get(item)
+            val mapField = generateSequence<Class<*>>(bar.javaClass) { it.superclass }
+                .firstNotNullOfOrNull { cls ->
+                    ICON_PAIR_MAP_FIELD_CANDIDATES.firstNotNullOfOrNull { name ->
+                        runCatching { cls.getDeclaredField(name) }.getOrNull()
+                            ?.takeIf { Map::class.java.isAssignableFrom(it.type) }
+                    }
+                } ?: return null
+            mapField.isAccessible = true
+            if (!iconPairFieldLogged) {
+                iconPairFieldLogged = true
+                android.util.Log.println(
+                    android.util.Log.INFO, "LiquidGlass",
+                    "vivo-health icon pair map field = ${mapField.name} (Map)",
+                )
+            }
+            (mapField.get(bar) as? Map<*, *>)?.get(item)
         }.getOrNull()
     }
 
