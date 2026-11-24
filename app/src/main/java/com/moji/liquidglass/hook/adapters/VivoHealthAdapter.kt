@@ -523,27 +523,37 @@ object VivoHealthAdapter : AppAdapter {
 
     /** 反射读底栏图标对映射（条目 → LottieAttribute；7.1.3.23 字段名 `p` / 7.1.3.13
      *  字段名 `F`——originui 库升版字段整体重排，同版本 `q`/`G` 为菜单点击监听映射，
-     *  不是图标对）。候选按名 + 「字段类型 = Map」判定，沿底栏超类链查找（不锚库类名）；
-     *  映射或条目缺失返回 null（静默降级，无崩溃面）。 */
+     *  不是图标对）。候选按名 + 「字段类型 = Map」+ 「映射含该条目」判定，沿底栏超类链
+     *  查找（不锚库类名）；映射或条目缺失返回 null（静默降级，无崩溃面）。 */
     private fun iconPairOf(bar: View, item: View): Any? {
-        return runCatching {
-            val mapField = generateSequence<Class<*>>(bar.javaClass) { it.superclass }
-                .firstNotNullOfOrNull { cls ->
-                    ICON_PAIR_MAP_FIELD_CANDIDATES.firstNotNullOfOrNull { name ->
-                        runCatching { cls.getDeclaredField(name) }.getOrNull()
-                            ?.takeIf { Map::class.java.isAssignableFrom(it.type) }
-                    }
-                } ?: return null
-            mapField.isAccessible = true
-            if (!iconPairFieldLogged) {
-                iconPairFieldLogged = true
-                android.util.Log.println(
-                    android.util.Log.INFO, "LiquidGlass",
-                    "vivo-health icon pair map field = ${mapField.name} (Map)",
-                )
+        var typeOnlyMatch: java.lang.reflect.Field? = null
+        for (cls in generateSequence<Class<*>>(bar.javaClass) { it.superclass }) {
+            for (name in ICON_PAIR_MAP_FIELD_CANDIDATES) {
+                val field = runCatching { cls.getDeclaredField(name) }.getOrNull() ?: continue
+                if (!Map::class.java.isAssignableFrom(field.type)) continue
+                runCatching { field.isAccessible = true }
+                val pair = runCatching { (field.get(bar) as? Map<*, *>)?.get(item) }.getOrNull()
+                if (pair != null) {
+                    logIconPairField(field)
+                    return pair
+                }
+                if (typeOnlyMatch == null) typeOnlyMatch = field
             }
-            (mapField.get(bar) as? Map<*, *>)?.get(item)
-        }.getOrNull()
+        }
+        // 字段命中但本帧映射尚无该条目（主题重放重建空窗等）：按同类型字段取一次（可能仍 null）
+        val fallback = typeOnlyMatch ?: return null
+        logIconPairField(fallback)
+        return runCatching { (fallback.get(bar) as? Map<*, *>)?.get(item) }.getOrNull()
+    }
+
+    /** 图标对映射字段首次命中名日志（升版 logcat 核对用，应用级一次）。 */
+    private fun logIconPairField(field: java.lang.reflect.Field) {
+        if (iconPairFieldLogged) return
+        iconPairFieldLogged = true
+        android.util.Log.println(
+            android.util.Log.INFO, "LiquidGlass",
+            "vivo-health icon pair map field = ${field.name} (Map)",
+        )
     }
 
     private fun drawableField(pair: Any?, name: String): android.graphics.drawable.Drawable? =
