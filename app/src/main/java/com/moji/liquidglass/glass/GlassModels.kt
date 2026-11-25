@@ -20,17 +20,17 @@ data class GlassStyle(
     /** 栏高（dp），内容行 = 栏高 - 8dp。 */
     val barHeightDp: Float = 60f,
     /** 折射模糊半径（dp）。 */
-    val blurRadiusDp: Float = 6f,
+    val blurRadiusDp: Float = 5f,
     /** 玻璃表面色不透明度（0~1）：叠在模糊内容上的底色浓度，0 = 纯透明玻璃。 */
-    val surfaceAlpha: Float = 0.2f,
+    val surfaceAlpha: Float = 0.25f,
     /** 色彩饱和度：模糊内容的鲜艳度（vibrancy），默认 1.5（iOS 同款）。 */
     val saturation: Float = 1.5f,
     /** 折射量：玻璃边缘与液泡折射位移幅度（shader refractionAmount）的缩放系数，
      *  0 = 无折射平边。默认 1（100%）。 */
     val refractionAmountScale: Float = 1f,
     /** 折射高度：折射带宽（边缘向内发生折射的距离，shader refractionHeight）的缩放系数，
-     *  0 = 无折射平边。默认 0.35（35%）。 */
-    val refractionHeightScale: Float = 0.35f,
+     *  0 = 无折射平边。默认 0.50（50%）。 */
+    val refractionHeightScale: Float = 0.50f,
     /** 是否显示 tab 文字标签。 */
     val showLabels: Boolean = true,
     /** 全局玻璃栏边缘光/内晕开关（实验，默认开）：关闭 = 原 Highlight.Default、无内晕。 */

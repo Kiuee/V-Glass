@@ -57,7 +57,7 @@ data class ModuleConfig(
      *  商店等默认路径不受影响。视觉异常时可远程配置改为 false 关闭。 */
     val lightweightSampling: Boolean = true,
     /** 静止降帧 + 深度静止档（默认开）：中央为全部适配器会话开启信号驱动的两档
-     *  （活动窗口 1s → 30fps 静止档 3s → 1Hz 帧循环睡眠）——退出 withFrameNanos
+     *  （活动窗口 1s → 30fps 静止档 2s → 1Hz 帧循环睡眠）——退出 withFrameNanos
      *  常驻订阅（静止 60Hz 不降的根因），显示管线降到面板最低档（LTPO 1Hz）对齐
      *  原生功耗。视频 TextureView 在默认信号类内，播放期间永不降档。视觉异常时
      *  远程配置关闭，回退逐位不变旧行为（每帧恒满档兜底）。 */
@@ -140,12 +140,12 @@ data class ModuleConfig(
                 barMarginDp = root.optDouble("barMarginDp", 20.0).toFloat(),
                 barBottomGapDp = root.optDouble("barBottomGapDp", 0.0).toFloat(),
                 barHeightDp = root.optDouble("barHeightDp", 60.0).toFloat(),
-                barBlurDp = root.optDouble("barBlurDp", 6.0).toFloat(),
-                barSurfaceAlpha = root.optDouble("barSurfaceAlpha", 0.2).toFloat(),
+                barBlurDp = root.optDouble("barBlurDp", 5.0).toFloat(),
+                barSurfaceAlpha = root.optDouble("barSurfaceAlpha", 0.25).toFloat(),
                 barSaturation = root.optDouble("barSaturation", 1.5).toFloat(),
                 // 折射强度拆分迁移（一次性）：旧配置仅有 barRefractionScale 键时两项新键
                 // 同置旧值（两项同乘 v = 旧共享乘数行为逐位不变）；新配置缺键时各取自身
-                // 新默认（量 1.0 / 高度 0.35）。
+                // 新默认（量 1.0 / 高度 0.50）。
                 barRefractionAmountScale = when {
                     root.has("barRefractionAmountScale") ->
                         root.optDouble("barRefractionAmountScale", 1.0).toFloat()
@@ -155,10 +155,10 @@ data class ModuleConfig(
                 },
                 barRefractionHeightScale = when {
                     root.has("barRefractionHeightScale") ->
-                        root.optDouble("barRefractionHeightScale", 0.35).toFloat()
+                        root.optDouble("barRefractionHeightScale", 0.50).toFloat()
                     root.has("barRefractionScale") ->
                         root.optDouble("barRefractionScale", 1.0).toFloat()
-                    else -> 0.35f
+                    else -> 0.50f
                 },
                     barShowLabels = root.optBoolean("barShowLabels", true),
                     barEdgeGlow = root.optBoolean("barEdgeGlow", true),
