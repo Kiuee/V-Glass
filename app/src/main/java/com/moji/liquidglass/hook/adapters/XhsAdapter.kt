@@ -22,9 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 小红书（com.xingin.xhs，第三方应用）适配器。基准版本（多版本兼容窗口，§0.6.3）：
- * 9.52.1（versionCode 9521800）/ 9.50.0（versionCode 9500803）——9.52.1 起切页管线
- * 混淆名整包迁移（n4d→ntc，成员字母整体位移），全部反射锚点为双版候选链；免适配版
- * 9.51.0（锚点同 9.50.0）走 9.50.0 候选腿，登记于 AdaptedVersionRegistry。
+ * 9.56.0（versionCode 9560805）/ 9.52.1（versionCode 9521800）/ 9.50.0（versionCode
+ * 9500803）。切页管线混淆名已两次整包迁移（9.50.0 n4d → 9.52.1 ntc → 9.56.0 q5d，
+ * 后两次包名换字母、成员字母大体保留：控制器 .p、延迟体 .l、序号 B、懒加载 e/u0.a 均
+ * 未变；9.56.0 内部方法重排使切页入口 C2→X2、pager getter x0→d0），全部反射锚点为
+ * **三版候选链**（新名优先、旧名回退、逐个 runCatching 静默降级）；免适配版 9.51.0
+ * （锚点同 9.50.0）走 9.50.0 候选腿，9.53.0/9.54.0/9.55.2（锚点同 9.52.1）走 9.52.1
+ * 候选腿，均登记于 AdaptedVersionRegistry。
  *
  * - 主 Tab Activity：`com.xingin.xhs.index.v2.IndexActivityV2`（launcher，singleTask；
  *   LCBActivity 薄壳，底栏由后续 content 挂载，Activity 类本身不引用底栏类）。
@@ -86,10 +90,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   这一显示层根因由 v2.6 补齐。
  * - installAppHooks（v2.4 共 3 个行为 hook）：①`TabView.setSelected` after → 储备
  *   重扫/列表余量/页面容器衬垫归零触发（应用切页信号 J0 的落点，300ms 防抖）；②切页入口 after → 切页
- *   同步重放（replayShowPage，候选链 9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2）；③切页延迟体
- *   invoke before → 按序号陈旧性自行吞咽（swallowStaleDeferredBody，候选链 ntc.l /
- *   n4d.l）——应用守卫第二条件是商城 tab 开关配置位，配置 false 时序号守卫失效，空闲
- *   冲刷时陈旧延迟体重执行 = 跳回首次切换的 tab（v2.4 修复）。v2.1 的
+ *   同步重放（replayShowPage，候选链 9.56.0 q5d.p.X2 / 9.52.1 ntc.p.C2 / 9.50.0
+ *   n4d.n.i2）；③切页延迟体 invoke before → 按序号陈旧性自行吞咽
+ *   （swallowStaleDeferredBody，候选链 q5d.l / ntc.l / n4d.l）——应用守卫第二条件是
+ *   商城 tab 开关配置位，配置 false 时序号守卫失效，空闲冲刷时陈旧延迟体重执行 = 跳回
+ *   首次切换的 tab（v2.4 修复）。v2.1 的
  *   `n4d.n` 构造捕获已删——v2.2 点击派发改 LiquidTab performTap 式（TabBarView
  *   getIndexXxx 真实名私有 getter + 穿透点击，见 dispatchTabClick），不再主动调切页
  *   入口，controller 来自被拦截调用的 thisObj。v1.4–v1.9
@@ -99,27 +104,30 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   isSelected）、配色捕获（WHOLE_TAB_FULL 不需要）、预览副作用吞咽（setSelected 无
  *   切页副作用）均无需求。
  *
- * - **切页机制（v1.8 同步忠实重放，取代 v1.6/v1.7 直驱；v2.3 双版候选链）**：应用切页入口
- *   （9.52.1 `ntc.p.C2` / 9.50.0 `n4d.n.i2`）同步段写状态/发事件/序号自增后，把切页动作
- *   挂 IdleHandler（9.52.1 `f4c.f.r0` / 9.50.0 `oec.f.S0` = MessageQueue.IdleHandler）——
+ * - **切页机制（v1.8 同步忠实重放，取代 v1.6/v1.7 直驱；v2.3 双版候选链 → 三版）**：
+ *   应用切页入口（9.56.0 `q5d.p.X2` / 9.52.1 `ntc.p.C2` / 9.50.0 `n4d.n.i2`）同步段写
+ *   状态/发事件/序号自增后，把切页动作挂 IdleHandler（9.56.0 `sfc.f.r0` / 9.52.1
+ *   `f4c.f.r0` / 9.50.0 `oec.f.S0` = MessageQueue.IdleHandler）——
  *   玻璃帧循环使主队列整场不空闲，延迟体前台永不执行 = 点击滞留（v1.4 真机 35 连发滞留
  *   至 activity pause 集中爆发）；延迟体除 setCurrentItem 外还含懒加载激活
- *   （IndexPagerLazyLoad → setMaxLifecycle(RESUMED)，9.52.1 字段 e.ntc.t0.a / 9.50.0
- *   Y1().n4d.u0.b）——v1.6/v1.7 直驱 setCurrentItem 跳过它即"非首页空白"的根因，且丢失
- *   page 0 的回顶语义（9.50.0 延迟体经 y0()，其方法体即 setCurrentItem(0,false)；9.52.1
- *   延迟体 page 0 直接 setCurrentItem；两版"点击已选中 tab"的回顶刷新都由应用点击管线
- *   自管，不在延迟体）。v1.8 玻璃点击经切页入口全管线派发，入口 after
- *   hook 同步重放延迟体（含懒加载激活），随后自增序号字段（9.52.1 B / 9.50.0 G）；滞留
- *   延迟体在空闲冲刷时的幂等跳过由 v2.4 延迟体吞咽 hook 按序号陈旧性自行强制（应用守卫
- *   第二条件依赖商城 tab 开关配置位、不可依赖，见 installAppHooks ③）。引擎侧静止降帧
- *   深度静止睡眠（1Hz）期主队列天然空闲，其他未知的 idle 挂载任务可正常冲刷。
+ *   （IndexPagerLazyLoad → setMaxLifecycle(RESUMED)，9.56.0 字段 e.q5d.u0.a / 9.52.1
+ *   字段 e.ntc.t0.a / 9.50.0 Y1().n4d.u0.b）——v1.6/v1.7 直驱 setCurrentItem 跳过它即
+ *   "非首页空白"的根因，且丢失 page 0 的回顶语义（9.50.0 延迟体经 y0()，其方法体即
+ *   setCurrentItem(0,false)；9.52.1/9.56.0 延迟体 page 0 直接 setCurrentItem；三版
+ *   "点击已选中 tab"的回顶刷新都由应用点击管线自管，不在延迟体）。v1.8 玻璃点击经切页
+ *   入口全管线派发，入口 after hook 同步重放延迟体（含懒加载激活），随后自增序号字段
+ *   （9.56.0/9.52.1 B / 9.50.0 G）；滞留延迟体在空闲冲刷时的幂等跳过由 v2.4 延迟体
+ *   吞咽 hook 按序号陈旧性自行强制（应用守卫第二条件依赖商城 tab 开关配置位、不可
+ *   依赖，见 installAppHooks ③）。引擎侧静止降帧深度静止睡眠（1Hz）期主队列天然空闲，
+ *   其他未知的 idle 挂载任务可正常冲刷。
  *
  * - **冷启动 count 窗口（v1.9 挂起 → v2.0 自增长 → v2.5 装配后预增长）**：外层 pager 的
  *   IndexPagerAdapterV2 冷启动 count=1（public int r，getCount() 直返），增长任务由
  *   onAttach 经 IdleHandler 排队（AB andr_homefeed_delay_init_fragment_ab；9.50.0 =
- *   n4d.n.onAttach case 15、9.52.1 = ntc.p.onAttach，且新增按需口 o2() expandTabCount——
- *   方法体同为 `r=4 + notifyDataSetChanged()`，与本适配器 growExplorePagerAdapter 字节
- *   等价）——帧循环饿死 IdleHandler 时 count 长期 =1（v2.7.log 实测 30s+），且
+ *   n4d.n.onAttach case 15、9.52.1 = ntc.p.onAttach，且 9.52.1 起新增按需口（9.56.0
+ *   q5d.p.H2() / 9.52.1 ntc.p.o2() expandTabCount）——方法体同为 `r=4 +
+ *   notifyDataSetChanged()`，与本适配器 growExplorePagerAdapter 字节等价）——帧循环
+ *   饿死 IdleHandler 时 count 长期 =1（v2.7.log 实测 30s+），且
  *   ViewPager.setCurrentItemInternal 对 `item >= count` **钳位到 count-1 并静默丢弃**
  *   （不存储请求——v1.7"记忆 mCurItem 补切"前提证伪），窗口内一切 setCurrentItem（含
  *   应用自己滞留的延迟体）都是 no-op = "一开始点击没反应"。v2.0 在 count 未就绪时
@@ -133,7 +141,7 @@ object XhsAdapter : AppAdapter {
     override val targetPackage: String = "com.xingin.xhs"
     override val displayName: String = "小红书"
     override val tabActivityClassName: String? = "com.xingin.xhs.index.v2.IndexActivityV2"
-    override val baselineVersions: List<String> = listOf("9.50.0", "9.52.1")
+    override val baselineVersions: List<String> = listOf("9.50.0", "9.52.1", "9.56.0")
 
     private const val BAR_CLASS = "com.xingin.xhs.homepage.tabbar.TabBarView"
     private const val MALL_BAR_CLASS = "com.xingin.commercial.shop.malltabbar.TabBarView"
@@ -143,7 +151,7 @@ object XhsAdapter : AppAdapter {
     /** 首页内容根 ViewPager（布局 lpt/nyn.xml 内 marginBottom=45dp 的储备承载者，非混淆类名）。 */
     private const val EXPLORE_PAGER_CLASS = "com.xingin.redview.viewpage.ExploreScrollableViewPager"
 
-    /** ViewPager2（androidx，两版均未混淆）：「我的页」内容区容器。ViewPager2 继承
+    /** ViewPager2（androidx，三版均未混淆）：「我的页」内容区容器。ViewPager2 继承
      *  ViewGroup、内部藏一个撑满自身的 RecyclerView 作页面容器——列表余量 pass 对该容器
      *  加 paddingBottom 会把整页内容抬离玻璃栏区（RecyclerView 子项在 padding 盒内布局，
      *  clipToPadding 只影响裁剪不影响布局盒），须整类排除（见 isViewPager2Scoped）。 */
@@ -155,38 +163,49 @@ object XhsAdapter : AppAdapter {
      *  是唯一解（见 viewportFits / applyViewportFit）。 */
     private const val MESSAGE_PAGE_CLASS = "com.xingin.im.v2.message.MessagePageView"
 
-    // —— 应用切页管线（controller = 首页 ContentViewController，反编译实证；9.52.1 =
-    //    ntc.p（classes19）、9.50.0 = n4d.n（classes13）——9.52.1 整包迁移 n4d→ntc 且成员
-    //    字母整体位移：切页入口 i2→C2、序号 G→B、presenter n4d.n0→ntc.o0（t0→x0）、
-    //    懒加载 n4d.u0.b→ntc.t0.a（访问口 Y1() 方法→字段 e），延迟段仍把切页动作挂
-    //    MessageQueue.IdleHandler（oec.f.S0 → f4c.f.r0）。混淆名按双版钉扎为候选链；
-    //    序号字段与懒加载方法按命中的类名取表——盲序候选会错绑（n4d.n 上 B:I 已被语义
-    //    无关字段占用、n4d.u0 上另有语义不同的 a(I)），见 SEQ_FIELDS_BY_CONTROLLER /
-    //    LAZY_METHODS_BY_LOADER。应用更新改名时 hook 安装失败打 WARN、派发自动降级
-    //    直驱（不劣于 v1.7 行为）。 ——
+    // —— 应用切页管线（controller = 首页 ContentViewController，反编译实证；9.56.0 =
+    //    q5d.p、9.52.1 = ntc.p、9.50.0 = n4d.n，三者同在 classes19，成员字母大体保留）——
+    //    9.52.1 整包迁移 n4d→ntc 且成员字母整体位移：切页入口 i2→C2、序号 G→B、
+    //    presenter n4d.n0→ntc.o0（t0→x0）、懒加载 n4d.u0.b→ntc.t0.a（访问口 Y1()→字段 e）；
+    //    9.56.0 再迁移 ntc→q5d，.p/.l/B/e/u0.a 全部保留，仅类内方法重排：切页入口 C2→X2、
+    //    pager getter x0→d0、延迟体类 .l 与 IdleHandler 提供者 sfc.f.r0 换壳。延迟段始终
+    //    把切页动作挂 MessageQueue.IdleHandler（oec.f.S0 → f4c.f.r0 → sfc.f.r0）。混淆名
+    //    按三版钉扎为候选链；序号字段、pager getter 与懒加载方法按命中的类名取表——盲序
+    //    候选会错绑（n4d.n 上 B:I 已被语义无关字段占用、n4d.u0 上另有语义不同的 a(I)），
+    //    见 SEQ_FIELDS_BY_CONTROLLER / PAGER_GETTERS_BY_PRESENTER / LAZY_METHODS_BY_LOADER。
+    //    应用更新改名时 hook 安装失败打 WARN、派发自动降级直驱（不劣于 v1.7 行为）。 ——
 
     /** 切页管线候选（新名优先，controller 类名 × 切页入口成对）：切页全管线入口
      *  （public final (I)V），玻璃点击经它走应用完整管线（懒加载激活等语义保真）。 */
     private val SHOW_PAGE_CANDIDATES = arrayOf(
-        "ntc.p" to "C2",   // 9.52.1（versionCode 9521800）
+        "q5d.p" to "X2",   // 9.56.0（versionCode 9560805）
+        "ntc.p" to "C2",   // 9.52.1（versionCode 9521800；含同锚点的 9.53.0/9.54.0/9.55.2）
         "n4d.n" to "i2",   // 9.50.0（含同锚点的免适配版 9.51.0）
     )
 
-    /** presenter 访问器（在两版共同基类上，同名）。 */
+    /** presenter 访问器（三版共同基类上，同名）。 */
     private const val PRESENTER_GETTER = "getPresenter"
 
-    /** pager 访问器候选（presenter 上，新名优先；两版无同形无参方法，顺序安全）。 */
-    private val PAGER_GETTERS = arrayOf("x0", "t0")
+    /** pager 访问器：presenter 类名 → 方法名（三版各不相同）。类名未登记时按
+     *  [PAGER_GETTER_FALLBACKS] 盲序试——三版互不冲突（d0 只在 q5d.p0；x0 在 n4d.n0 上是
+     *  (ILXhsActivity;)V 带参方法，getMethod 无参查找天然不命中；t0 只在 n4d.n0 返回 pager）。 */
+    private val PAGER_GETTERS_BY_PRESENTER = mapOf(
+        "q5d.p0" to "d0",   // 9.56.0
+        "ntc.o0" to "x0",   // 9.52.1
+        "n4d.n0" to "t0",   // 9.50.0
+    )
+    private val PAGER_GETTER_FALLBACKS = arrayOf("d0", "x0", "t0")
 
     /** 懒加载激活链：IndexPagerLazyLoad（setMaxLifecycle(fragment, RESUMED) 页面激活，
      *  直驱跳过此步即"非首页空白"根因）。访问口候选：9.50.0 经 controller 方法 Y1()，
-     *  9.52.1 直接读字段 e（两名字在两类上互斥，顺序无碰撞）。 */
+     *  9.52.1/9.56.0 直接读字段 e（两名字在两类上互斥，顺序无碰撞）。 */
     private const val LAZY_ACCESS_METHOD = "Y1"
     private const val LAZY_ACCESS_FIELD = "e"
 
     /** 懒加载激活方法（(I)V)按命中 loader 类名取：n4d.u0 上另有语义不同的 a(I)，盲序
      *  候选会错绑。 */
     private val LAZY_METHODS_BY_LOADER = mapOf(
+        "q5d.u0" to "a",   // 9.56.0
         "ntc.t0" to "a",   // 9.52.1
         "n4d.u0" to "b",   // 9.50.0
     )
@@ -195,6 +214,7 @@ object XhsAdapter : AppAdapter {
      *  重放后自增使滞留的 IdleHandler 幂等跳过（仅服务该守卫）。按命中 controller 类名
      *  取：n4d.n 上 B:I 已被语义无关字段占用，盲序候选会错绑。 */
     private val SEQ_FIELDS_BY_CONTROLLER = mapOf(
+        "q5d.p" to "B",   // 9.56.0
         "ntc.p" to "B",   // 9.52.1
         "n4d.n" to "G",   // 9.50.0
     )
@@ -202,20 +222,21 @@ object XhsAdapter : AppAdapter {
     /** 切页延迟体 lambda 候选（切页动作挂 IdleHandler 的载体，invoke(Object)Object）：
      *  Triple(类名, capturedSeq 字段, controller 字段)。invoke 前按序号陈旧性自行吞咽
      *  （见 installAppHooks 延迟体守卫 hook）——应用守卫的第二条件是商城 tab 开关配置位
-     *  （9.52.1 ntc.p.D / 9.50.0 n4d.n.Z1→H，同为 show_mall_tab_bar 系列），配置 false
-     *  时序号守卫整体失效，不能依赖。 */
+     *  （9.56.0 q5d.p.D / 9.52.1 ntc.p.D / 9.50.0 n4d.n.Z1→H，同为 show_mall_tab_bar
+     *  系列），配置 false 时序号守卫整体失效，不能依赖。 */
     private val DEFERRED_BODY_CANDIDATES = arrayOf(
-        Triple("ntc.l", "a", "b"),   // 9.52.1（captured seq / controller）
+        Triple("q5d.l", "a", "b"),   // 9.56.0（captured seq / controller）
+        Triple("ntc.l", "a", "b"),   // 9.52.1
         Triple("n4d.l", "d", "e"),   // 9.50.0
     )
     private const val DEFERRED_INVOKE = "invoke"
 
     /** IndexPagerAdapterV2 的 count 字段（public int r，初始 1；getCount() 直返此值）。
      *  应用 growth 任务（onAttach 经 IdleHandler 排队）就是 `r = 4 +
-     *  notifyDataSetChanged()` 两行（9.52.1 ntc.f.invoke 增长 case 字节实证）。 */
+     *  notifyDataSetChanged()` 两行（9.56.0/9.52.1 增长 case 字节实证）。 */
     private const val PAGER_COUNT_FIELD = "r"
 
-    /** 外层 pager 满页数（应用增长任务的目标值，两版一致）。 */
+    /** 外层 pager 满页数（应用增长任务的目标值，三版一致）。 */
     private const val PAGER_FULL_COUNT = 4
 
     /** 预增长重试间隔：装配后 800ms 首试（避开冷启动首帧与玻璃装配同一批主线程工作），
@@ -304,7 +325,7 @@ object XhsAdapter : AppAdapter {
 
     /**
      * 外层 pager 预增长（v2.5，装配后 800ms 首试）：与应用增长任务字节等价的
-     * [growExplorePagerAdapter]（r=4 + notifyDataSetChanged，9.52.1 ntc.f.invoke 增长
+     * [growExplorePagerAdapter]（r=4 + notifyDataSetChanged，9.56.0/9.52.1 增长 case 字节
      * case 实证）提前到装配期执行，恢复原生「启动后首空闲增长、页面预实例化」时序——
      * 消除首次点击的现场实例化延迟。幂等（count ≥ 4 直接跳过，应用滞留的增长任务将来
      * 冲刷时同样无操作）；adapter 未就绪（pager 尚未 setAdapter / 反射失配）时按
@@ -538,10 +559,10 @@ object XhsAdapter : AppAdapter {
         itemCheckedSetterMethodName = "setSelected",
         // 条目自带选中态外观（state_selected 图标选择器 + 文字 ColorStateList），不整层染色
         tintRefractionContent = false,
-        // 点击派发接管：应用切页入口（9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2）把切页动作挂在
-        // MessageQueue.IdleHandler（f4c.f.r0 / oec.f.S0），玻璃帧循环使主队列整场不空闲 →
-        // 切页滞留（v1.4 真机 35 连发实证）。v1.8 经切页入口全管线派发 + after hook 同步
-        // 重放延迟体（见 dispatchTabClick / replayShowPage）
+        // 点击派发接管：应用切页入口（9.56.0 q5d.p.X2 / 9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2）
+        // 把切页动作挂在 MessageQueue.IdleHandler（sfc.f.r0 / f4c.f.r0 / oec.f.S0），玻璃帧
+        // 循环使主队列整场不空闲 → 切页滞留（v1.4 真机 35 连发实证）。v1.8 经切页入口全管线
+        // 派发 + after hook 同步重放延迟体（见 dispatchTabClick / replayShowPage）
         tabClickHandler = { index, tabViews, container ->
             dispatchTabClick(index, tabViews, container)
         },
@@ -667,15 +688,15 @@ object XhsAdapter : AppAdapter {
         }.onFailure {
             facade.log(android.util.Log.WARN, "hook Xhs TabView.setSelected failed (reserve re-sweep degraded)", it)
         }
-        // 切页同步重放：应用切页延迟体挂在 IdleHandler（9.50.0 oec.f.S0 / 9.52.1 f4c.f.r0），
-        // 玻璃帧循环使主队列整场不空闲 → 前台永不执行（v1.4 真机 35 连发滞留实证）。在切页
-        // 入口（9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2，候选链新名优先）同步段（状态写入/事件/
-        // 序号自增）完成后立即重放延迟体等价动作，见 replayShowPage。after 回调异常会上抛
-        // 宿主，重放内部必须全程自捕获。（v2.3 起共 2 个行为 hook：本 hook +
-        // TabView.setSelected 视觉触发；n4d.n 构造捕获已删——穿透式点击不主动调切页入口，
-        // controller 实例来自被拦截调用的 thisObj，无冷启动捕获需求；u4c.d0$a /
-        // pager.setCurrentItem 取证与 PagerAdapter.notifyDataSetChanged 兜底此前已删，
-        // 排障需要时按 №06 手册恢复。）
+        // 切页同步重放：应用切页延迟体挂在 IdleHandler（9.56.0 sfc.f.r0 / 9.52.1 f4c.f.r0 /
+        // 9.50.0 oec.f.S0），玻璃帧循环使主队列整场不空闲 → 前台永不执行（v1.4 真机 35 连发
+        // 滞留实证）。在切页入口（9.56.0 q5d.p.X2 / 9.52.1 ntc.p.C2 / 9.50.0 n4d.n.i2，
+        // 候选链新名优先）同步段（状态写入/事件/序号自增）完成后立即重放延迟体等价动作，
+        // 见 replayShowPage。after 回调异常会上抛宿主，重放内部必须全程自捕获。（v2.3 起共
+        // 2 个行为 hook：本 hook + TabView.setSelected 视觉触发；n4d.n 构造捕获已删——
+        // 穿透式点击不主动调切页入口，controller 实例来自被拦截调用的 thisObj，无冷启动
+        // 捕获需求；u4c.d0$a / pager.setCurrentItem 取证与 PagerAdapter.notifyDataSetChanged
+        // 兜底此前已删，排障需要时按 №06 手册恢复。）
         runCatching {
             var hooked = false
             for ((controllerClass, showPageMethod) in SHOW_PAGE_CANDIDATES) {
@@ -710,7 +731,7 @@ object XhsAdapter : AppAdapter {
         // 窗口冲刷时若守卫失效会重新执行 = 跳回陈旧页（时序：冷启动 count=1 首次点击走
         // IdleHandler 路径留延迟体，重放当场切页；后续点击 count 已就绪走 post 快速路径
         // 不留延迟体 → 冲刷时恰好只剩首切延迟体 → 跳回首次切换的 tab）。应用守卫 =
-        // `captured != seq && 配置位`，第二条件是商城 tab 开关（两版同源），配置 false 即
+        // `captured != seq && 配置位`，第二条件是商城 tab 开关（三版同源），配置 false 即
         // 整体失效——这里按序号陈旧性自行吞咽：我们的切页重放已同步执行过同一切页动作并
         // 自增序号，延迟体对玻璃点击恒为冗余；captured == 当前序号（重放失败未自增）时
         // 放行，走应用原生兜底（冲刷时队列空闲，延迟体可正常执行）。
@@ -792,17 +813,18 @@ object XhsAdapter : AppAdapter {
     }
 
     /**
-     * 切页入口 after 同步重放（v1.8 核心修复，v2.3 双版候选链）：应用把切页动作挂
-     * MessageQueue.IdleHandler（9.50.0 oec.f.S0 / 9.52.1 f4c.f.r0），玻璃帧循环使主队列
-     * 整场不空闲 → 延迟体前台永不执行 = 点击滞留（v1.4 真机：35 次点击滞留至 activity
-     * pause 集中爆发）。本重放在切页入口同步段（状态写入/事件/序号自增）完成后立即执行
-     * 延迟体等价动作（9.50.0 n4d.l / 9.52.1 ntc.l 字节级对齐）：
+     * 切页入口 after 同步重放（v1.8 核心修复，v2.3 双版候选链 → v3 三版）：应用把切页
+     * 动作挂 MessageQueue.IdleHandler（9.56.0 sfc.f.r0 / 9.52.1 f4c.f.r0 / 9.50.0
+     * oec.f.S0），玻璃帧循环使主队列整场不空闲 → 延迟体前台永不执行 = 点击滞留（v1.4
+     * 真机：35 次点击滞留至 activity 集中爆发）。本重放在切页入口同步段（状态写入/事件/
+     * 序号自增）完成后立即执行延迟体等价动作（9.56.0 q5d.l / 9.52.1 ntc.l / 9.50.0
+     * n4d.l 字节级对齐）：
      * - 全部页（含 page 0）→ `presenter.pager().setCurrentItem(page, false)`——9.50.0 的
-     *   page 0 经 y0()，其方法体就是 setCurrentItem(0,false)（字节等价）；9.52.1 延迟体
-     *   page 0 直接 setCurrentItem。回顶刷新语义两版都由应用"点击已选中 tab"管线自管，
-     *   不在延迟体内；
+     *   page 0 经 y0()，其方法体就是 setCurrentItem(0,false)（字节等价）；9.52.1/9.56.0
+     *   延迟体 page 0 直接 setCurrentItem。回顶刷新语义三版都由应用"点击已选中 tab"管线
+     *   自管，不在延迟体内；
      * - count 未就绪先字节级重放增长任务（r=4 + notifyDataSetChanged；9.52.1 起应用另有
-     *   按需口 o2() expandTabCount，与本重放同字节）；
+     *   按需口 expandTabCount（9.56.0 q5d.p.H2 / 9.52.1 ntc.p.o2），与本重放同字节）；
      * - 懒加载激活（见 [applyLazyLoad]，setMaxLifecycle(RESUMED)——直驱跳过此步即
      *   "非首页空白"根因）；
      * - 自增序号字段（见 [bumpPageSeq]）：原延迟体的守卫判定已被取代而跳过，避免退后台
@@ -817,9 +839,13 @@ object XhsAdapter : AppAdapter {
             var applied = page == 0
             if (presenter != null) {
                 val presenterCls = presenter.javaClass
-                val pager = PAGER_GETTERS.firstNotNullOfOrNull { getter ->
-                    cachedMethod(presenterCls, getter)?.invoke(presenter) as? View
-                }
+                val pager = PAGER_GETTERS_BY_PRESENTER[presenterCls.name]
+                    ?.let { getter ->
+                        cachedMethod(presenterCls, getter)?.invoke(presenter) as? View
+                    }
+                    ?: PAGER_GETTER_FALLBACKS.firstNotNullOfOrNull { getter ->
+                        cachedMethod(presenterCls, getter)?.invoke(presenter) as? View
+                    }
                 if (pager != null) {
                     var count = pagerAdapterCount(pager)
                     if (count <= page) {
@@ -862,9 +888,9 @@ object XhsAdapter : AppAdapter {
         }
     }
 
-    /** 懒加载激活（重放延迟体第 2 步）：loader 经 Y1()（9.50.0）/字段 e（9.52.1）访问、
-     *  激活方法按 loader 类名取（LAZY_METHODS_BY_LOADER）。任一环节失配静默跳过——页面
-     *  可能空白至下一次全管线切页。 */
+    /** 懒加载激活（重放延迟体第 2 步）：loader 经 Y1()（9.50.0）/字段 e（9.52.1/9.56.0）
+     *  访问、激活方法按 loader 类名取（LAZY_METHODS_BY_LOADER）。任一环节失配静默跳过——
+     *  页面可能空白至下一次全管线切页。 */
     private fun applyLazyLoad(controller: Any, page: Int) {
         val cls = controller.javaClass
         val loader = cachedMethod(cls, LAZY_ACCESS_METHOD)?.invoke(controller)
