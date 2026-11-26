@@ -11,12 +11,12 @@ data class ModuleConfig(
     val enabled: Boolean = true,
     /** 内容延伸策略：
      *  off     — 不干预列表留白
-     *  source  — hook 留白静态方法返回 0（默认；10.4.81.0 为 ya.h.j()，混淆名随版本漂移；
-     *            失配自动降级 View.setPadding 平台收口。覆盖层架构下触摸路径原生化，
-     *            实测留白清零生效）
-     *  applier — j() 保持真实值，改写最终落地 padding 的应用点（libxposed 102 不可改参，
-     *            已改为 proceed 后重入落地，见 ModernFacade.mapIntArg；创建期 padding
-     *            由装配后扫描兜底，暂不默认） */
+     *  source  — hook 留白 getter 返回 0（默认；10.4.81.0 = ya.h.j()，10.6.21.0 = ya.f.h()，
+     *            候选链 + 混淆名随版本漂移；失配自动降级 View.setPadding 平台收口。
+     *            覆盖层架构下触摸路径原生化，实测留白清零生效）
+     *  applier — getter 保持真实值，改写最终落地出口（10.4.81.0 = zb.h.K0；10.6.21.0 =
+     *            首页分发 ac.i.M0 + footer 出口 xb.k.S1 + 平台 View.setPadding 收口并存；
+     *            libxposed 102 不可改参，已改为 proceed 后重入落地，见 ModernFacade.mapIntArg） */
     val contentExtend: String = CONTENT_EXTEND_SOURCE,
     /** 玻璃栏最小安全边距（dp）：栏宽 = min(可用宽 − 2×此值, tab 数 × 96dp + 8dp)，
      *  tab 少时栏收窄居中、边距自动放大，此值只作为下限。默认 20dp。 */
