@@ -295,8 +295,12 @@ object TargetHook {
         }
 
         try {
-            val session = GlassInstaller.install(activity, bar!!, tabViews, adapter.createExtractor())
-                ?: throw IllegalStateException("installer returned null")
+            val session = GlassInstaller.install(
+                activity,
+                bar!!,
+                tabViews,
+                adapter.createExtractor(),
+            ) ?: throw IllegalStateException("installer returned null")
             session.onStale = { scheduleProbe(activity, adapter, facade, config) }
             session.logger = { msg -> facade.log(android.util.Log.INFO, msg) }
             setupNavBarInsetProvider(session)
@@ -313,6 +317,16 @@ object TargetHook {
             // 采样去重统一设置（唯一设置点，默认开）：条带录制+回放（1×/tick）替代
             // 各节点全树直绘（3×/tick），轻量采样配置远程可关
             session.dedupeBackdropSampling = config().lightweightSampling
+            // 显示列表引用（唯一设置点，默认开，2.9.92）：条带采样与镜像不再每 tick
+            // view.draw 重编码宿主树，改为引用宿主已录制的 RenderNode（ViewDisplayList）；
+            // 取不到/不等价自动回退。descriptor 逃生门可按应用单独关闭；远程
+            // liveNodeSampling=false 整体回退 2.9.91 直绘路径。
+            session.backdropLiveNodeSampling =
+                config().liveNodeSampling && !adapter.descriptor.backdropDirectDraw
+            session.viewNodeMirror =
+                config().liveNodeSampling && !adapter.descriptor.viewDirectMirror
+            // 高刷减半（默认关 = 满帧跟随面板刷新率；仅 120Hz 实测掉帧时远程打开）
+            session.highRefreshHalfRate = config().highRefreshHalfRate
             AppAdapter.registerActivitySignalSession(session)
             logTargetVersion(activity, adapter, facade)
             GlassInstaller.glassStyle = GlassStyle.fromConfig(config())

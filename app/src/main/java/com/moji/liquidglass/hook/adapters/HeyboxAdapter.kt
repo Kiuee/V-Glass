@@ -182,10 +182,11 @@ object HeyboxAdapter : AppAdapter {
     // 上滑时列表新绑定的条目恰好落在屏幕底部的玻璃采样条带内，逐帧外部 view.draw
     // 把"新条目首次构建"（图片着色器/卡片测量绘制）的成本每帧重付一遍 = 上滑远比
     // 下滑卡的重因（下滑时条带内视图只是平移、显示列表有效，采样近乎免费）。
-    // 冻结门控 = 持续活动检测：信号连续触发 FREEZE_ENTER_MS 进入冻结（条带一次性
-    // 录制定格快照、冻结期纯回放零外部 draw），信号停 FREEZE_GAP_MS 恢复实时——
-    // 8dp 模糊下快照无感（芒果TV WebView 页/相册 GL 页同款通道）。离散变化（切页/
-    // 角标/选中）活动窗短于阈值不冻结，玻璃实时跟随。
+    // 冻结门控（**仅显示列表采样失效时的兜底**，2.9.92）：信号连续触发
+    // FREEZE_ENTER_MS 进入冻结（条带一次性录制定格快照、冻结期纯回放零外部 draw），
+    // 信号停 FREEZE_GAP_MS 恢复实时。live 路径生效时门控恒 false（滚动期实时折射，
+    // 见 onSessionCreated）；live 失效时才回到旧的上滑卡顿兜底（8dp 模糊下快照无感，
+    // 芒果TV WebView 页/相册 GL 页同款通道）。
     private const val FREEZE_GAP_MS = 250L
     private const val FREEZE_ENTER_MS = 200L
 
@@ -469,9 +470,21 @@ object HeyboxAdapter : AppAdapter {
         activeSessionRef = java.lang.ref.WeakReference(session)
         // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；
         // lightweightSampling 远程可关）
-        // 采样冻结（滑动期）：持续活动检测门控（见采样冻结注释）——上滑新绑定条目
-        // 落在条带内导致逐帧外部 draw 重付首建成本的上滑卡顿修复
-        session.backdropFreezeGate = { backdropFreezeGate() }
+        // 采样冻结（滑动期）**已降级为显示列表采样的兜底**：2.9.92 起引擎默认引用
+        // 内容视图已录制的 RenderNode（ViewDisplayList），上滑新绑定条目不再逐帧
+        // 重付首建成本——滚动期保持实时折射，只在 live 路径不可用（隐藏 API 失效等）
+        // 时才回到 200ms 持续活动冻结（旧行为）。见 backdropFreezeGate 声明处。
+        session.backdropFreezeGate = {
+            if (session.liveSamplingActive) {
+                session.noteOnce(
+                    "heybox-scroll-freeze-off",
+                    "heybox scroll freeze disabled (live sampling active)",
+                )
+                false
+            } else {
+                backdropFreezeGate()
+            }
+        }
         extendContentContainer(activity, facade)
         removeTopShadowLine(activity, facade)
         // 1.3.401 宿主 edge-to-edge 根衬垫压制：应用把导航条 inset 写进 vg_main_root

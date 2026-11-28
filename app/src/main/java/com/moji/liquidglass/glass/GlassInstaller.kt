@@ -37,7 +37,12 @@ object GlassInstaller {
     @Volatile
     var glassStyle: GlassStyle = GlassStyle()
 
-    fun install(activity: Activity, bar: View, tabViews: List<View>, extractor: TabExtractor): GlassSession? {
+    fun install(
+        activity: Activity,
+        bar: View,
+        tabViews: List<View>,
+        extractor: TabExtractor,
+    ): GlassSession? {
         val content = activity.findViewById<FrameLayout>(android.R.id.content) ?: return null
         // 采样源 appRoot = **包含底栏的 content 直接子视图**：merge 布局应用的 content 有
         // 多个子视图（原子笔记 = GONE 引导层 + 真实内容 + 闪屏），固定取 child(0) 会锚到

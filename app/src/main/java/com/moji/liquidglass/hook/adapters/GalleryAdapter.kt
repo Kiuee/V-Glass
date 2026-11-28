@@ -180,11 +180,10 @@ object GalleryAdapter : AppAdapter {
         // 背景采样去重：由 TargetHook 会话创建期统一设置（引擎单管线，默认开；远程配置
         // lightweightSampling 可关）。照片网格为 GL 渲染，去重后每 tick 单次录制条带、
         // 三节点回放（GL 整屏重绘 3 次 → 1 次）
-        // 实时显示列表采样：相册 `view.draw(canvas)` 会进入 GLRootView.onDraw 把整屏照片
-        // 网格重画一遍（主线程每帧重编码，低速滑动掉帧直接可见）。改为引用内容视图自身
-        // 已录制的 RenderNode：条带只在几何变化时重录，其余帧纯回放，内容仍是当帧实时
-        // （无降频滞后）；隐藏 API 取不到时引擎自动回退 view.draw（不崩溃）。
-        session.backdropLiveNodeSampling = true
+        // 实时显示列表采样：**2.9.92 起为引擎默认**（TargetHook 按 liveNodeSampling /
+        // descriptor.backdropDirectDraw 统一设置），本适配器不再单独声明。相册仍是该
+        // 通道的原始实证场景：`view.draw(canvas)` 会进入 GLRootView.onDraw 把整屏照片
+        // 网格重画一遍，引用内容视图自身 RenderNode 后主线程零重编码（№02.2）。
         // 预览期采样冻结（2.9.47 滑动切换瞬间整栏提亮闪烁修复）：拖动悬停窗口内条带
         // 一次性录制后纯回放，越界翻转触发的底栏重渲染不再进入磨砂底；预览结束自动
         // 解冻恢复实时采样（实时显示列表采样随之恢复）。

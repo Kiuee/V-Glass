@@ -56,6 +56,16 @@ data class ModuleConfig(
     /** 背景采样去重（重内容页优化）：仅适配器按需读取（相册 GL 渲染内容页采样昂贵），
      *  商店等默认路径不受影响。视觉异常时可远程配置改为 false 关闭。 */
     val lightweightSampling: Boolean = true,
+    /** 显示列表引用采样/镜像（默认开，2.9.92 起）：引擎把"每 tick 重跑宿主
+     *  `view.draw`"改为引用宿主已录制的 RenderNode（ViewDisplayList），主线程零重编码；
+     *  取不到/不等价时自动回退直绘。视觉异常时可远程置 false，整体回退 2.9.91 直绘路径
+     *  （descriptor `backdropDirectDraw` / `viewDirectMirror` 可按应用单独关闭）。 */
+    val liveNodeSampling: Boolean = true,
+    /** 高刷减半 tick（默认关，2.9.92 起）：true 时面板 ≥100Hz 按帧计数减半 tick。
+     *  默认满帧——降频会让折射层落后半帧（相册 №02.7 "拖影不跟手"），每 tick 重编码
+     *  成本已由显示列表引用从源头消除；仅当 120Hz 真机实测玻璃侧掉帧时远程打开兜底
+     *  （90Hz 永不减半）。 */
+    val highRefreshHalfRate: Boolean = false,
     /** 静止降帧 + 深度静止档（默认开）：中央为全部适配器会话开启信号驱动的两档
      *  （活动窗口 1s → 30fps 静止档 2s → 1Hz 帧循环睡眠）——退出 withFrameNanos
      *  常驻订阅（静止 60Hz 不降的根因），显示管线降到面板最低档（LTPO 1Hz）对齐
@@ -109,6 +119,8 @@ data class ModuleConfig(
         root.put("barInnerGlowRadiusDp", barInnerGlowRadiusDp.toDouble())
         root.put("barInnerGlowAlpha", barInnerGlowAlpha.toDouble())
         root.put("lightweightSampling", lightweightSampling)
+        root.put("liveNodeSampling", liveNodeSampling)
+        root.put("highRefreshHalfRate", highRefreshHalfRate)
         root.put("idleFrameSleep", idleFrameSleep)
         if (appEnabled.isNotEmpty()) {
             val apps = JSONObject()
@@ -168,6 +180,8 @@ data class ModuleConfig(
                     barInnerGlowRadiusDp = root.optDouble("barInnerGlowRadiusDp", 10.0).toFloat(),
                     barInnerGlowAlpha = root.optDouble("barInnerGlowAlpha", 0.35).toFloat(),
                     lightweightSampling = root.optBoolean("lightweightSampling", true),
+                    liveNodeSampling = root.optBoolean("liveNodeSampling", true),
+                    highRefreshHalfRate = root.optBoolean("highRefreshHalfRate", false),
                     idleFrameSleep = root.optBoolean("idleFrameSleep", true),
                     appEnabled = root.optJSONObject("appEnabled")?.let { apps ->
                         buildMap {

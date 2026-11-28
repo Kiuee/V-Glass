@@ -175,14 +175,44 @@ class GlassSession(
     @Volatile
     var dedupeBackdropSampling: Boolean = true
 
-    /** 实时显示列表采样（默认 false = 每帧 `view.draw()` 重编码内容树，既有行为逐位不变，
-     *  §0.4）。去重开启时生效：改为引用内容视图自身已录制的 `RenderNode`（隐藏 API
-     *  `View.mRenderNode`，取不到自动回退），条带仅在几何变化/唤醒时重录、其余帧纯回放
-     *  ——主线程每帧零重编码，条带内容仍是应用当帧录制的显示列表（**无降频滞后**）。
-     *  适用 = 采样即整屏重画的 GL 内容页（相册照片网格：`view.draw()` 会在相册渲染器内
-     *  重新走一遍整屏绘制）。仅声明该通道的应用消费。 */
+    /** 实时显示列表采样（**引擎默认 true**，TargetHook 会话创建期按配置 `liveNodeSampling`
+     *  与 descriptor `backdropDirectDraw` 唯一设置）：去重开启时生效，改为引用内容视图
+     *  自身已录制的 `RenderNode`（隐藏 API `View.mRenderNode`，取不到自动回退），条带仅
+     *  在几何变化/唤醒时重录、其余帧纯回放——主线程每帧零重编码，条带内容仍是应用当帧
+     *  录制的显示列表（**无降频滞后**）。
+     *  根因（对标 SuperLiquid `Backdrop.drawRecorded`）：每 tick `view.draw()` 会把宿主
+     *  内容树重新编码——相册 GL 内容页整屏重画、小黑盒上滑新绑定条目逐帧重付首建成本
+     *  （№02.2/№15.7）。默认开 = 全部应用受益；个别应用显示列表回放异常时由
+     *  descriptor `backdropDirectDraw` 或远程配置 `liveNodeSampling=false` 回退旧直绘。 */
     @Volatile
-    var backdropLiveNodeSampling: Boolean = false
+    var backdropLiveNodeSampling: Boolean = true
+
+    /** 镜像显示列表引用（**引擎默认 true**，与 [backdropLiveNodeSampling] 同一配置源、
+     *  descriptor `viewDirectMirror` 可关闭）：玻璃镜像 Painter 不再每 tick 单参
+     *  `view.draw(宿主视图)`，改为引用该视图已录制的 RenderNode（`ViewDisplayList`）。
+     *  主线程零重编码，RenderThread 按镜像盒裁剪栅格化；alpha≠1 / RenderEffect /
+     *  硬件层视图自动回退直绘，行为与旧实现逐位一致。适用面 = 整条目镜像（微博/小黑盒/
+     *  小红书）与逐帧 Lottie 图标镜像——这两类每 tick 会把宿主条目重新绘制 2 遍
+     *  （可见行 + 折射副本行）。 */
+    @Volatile
+    var viewNodeMirror: Boolean = true
+
+    /** 条带显示列表引用当前是否生效（引擎写入、适配器只读）：true = 本 tick 走 live
+     *  路径；false = 回退 `view.draw`。小黑盒滚动冻结门控据此降级为"仅 live 失效时
+     *  兜底"（live 生效时滚动期保持实时折射，不再定格快照）。 */
+    @Volatile
+    var liveSamplingActive: Boolean = false
+
+    /** 一次性诊断日志（同一 key 只输出一次，主线程调用）：镜像/采样模式只在首次
+     *  生效或首次回退时各留一条，避免逐 tick 刷屏。 */
+    fun noteOnce(key: String, message: String) {
+        synchronized(notedOnce) {
+            if (!notedOnce.add(key)) return
+        }
+        logger?.invoke(message)
+    }
+
+    private val notedOnce = HashSet<String>()
 
     /** 采样冻结门控（声明式通道，默认 null = 其余应用零影响）：适配器注入，返回 true
      *  时 backdrop 不对 appRoot 做逐帧外部 draw——**进入冻结时一次性录制**条带、冻结
@@ -244,6 +274,14 @@ class GlassSession(
      *  静止开销降 ~90%、滚动期信号升档 + 分频减半保流畅。 */
     @Volatile
     var idleDecayTickEnabled: Boolean = false
+
+    /** 高刷减半 tick（默认 false = 满帧，TargetHook 按配置 `highRefreshHalfRate` 唯一
+     *  设置）：仅面板实测平均 ≥100Hz 时生效（90Hz 永不减半——旧 >66Hz 判定让 90Hz
+     *  掉到 45fps 是明确缺陷）。**默认关**：减半会让折射层落后半帧（相册 №02.7
+     *  "拖影不跟手"），每 tick 重编码成本已由显示列表引用（ViewDisplayList）消除；
+     *  仅 120Hz 真机实测玻璃侧掉帧时远程打开兜底。 */
+    @Volatile
+    var highRefreshHalfRate: Boolean = false
 
     /** 深度静止档帧循环睡眠（1Hz，与 [idleDecayTickEnabled] 同一设置点统一开启，默认
      *  false = 逐位不变旧行为）：前提 = [idleDecayTickEnabled] 已开启（信号驱动会话，

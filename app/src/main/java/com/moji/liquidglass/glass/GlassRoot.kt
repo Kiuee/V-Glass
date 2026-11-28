@@ -38,6 +38,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.paint
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -109,6 +110,12 @@ fun GlassRoot(
     session: GlassSession
 ) {
     val density = LocalDensity.current
+    // 镜像绘制模式（每次组合解析一次，绘制相读取）：显示列表引用开关 + 一次性日志出口。
+    // 日志按会话去重（首次 live 生效 / 首次回退各一条），避免逐 tick 刷屏。
+    val mirrorEnabled = remember(session) { { session.viewNodeMirror } }
+    val mirrorReport = remember(session) {
+        { key: String, message: String -> session.noteOnce(key, message) }
+    }
     val tick = remember { mutableIntStateOf(0) }
     // tick 门控时间戳（帧循环低频档/深度静止档的间隔基准，主线程）
     val tickGate = remember { LongArray(1) }
@@ -124,19 +131,22 @@ fun GlassRoot(
         }
     }
     val backdrop = remember(appRoot, session) {
+        // 位置读取数组复用：backdrop 每个玻璃节点每帧取一次位置（4~5 次/帧），
+        // 原先每次调用分配 IntArray(2)（120Hz 下 GC 压力）。
+        val viewPos = IntArray(2)
         ClippedViewBackdrop(
             view = appRoot,
             tick = { tick.intValue },
             viewPosition = {
-                val out = IntArray(2)
-                appRoot.getLocationOnScreen(out)
-                Offset(out[0].toFloat(), out[1].toFloat())
+                appRoot.getLocationOnScreen(viewPos)
+                Offset(viewPos[0].toFloat(), viewPos[1].toFloat())
             },
             // 2.9.7 曾在此强制关闭条带去重做诊断（验证"模糊范围上移/栏体下半模糊消失"
             // 是否与去重相关）——证伪：根因 = 采样源越出内容视图底边无真实像素（§1.2
             // 采样条带越界镜像扩展，该镜像后于 2026-11-08 整体移除），恢复配置化默认。
             dedupe = { session.dedupeBackdropSampling },
             liveNodeSampling = { session.backdropLiveNodeSampling },
+            onLiveSampling = { session.liveSamplingActive = it },
             freeze = { session.backdropFreezeGate?.invoke() ?: false },
             forceRecord = {
                 val flag = session.backdropForceRecord
@@ -280,13 +290,20 @@ fun GlassRoot(
                         "frame metrics: 120 frames avg=${sumNs / 120 / 1_000_000}ms max=${maxNs / 1_000_000}ms " +
                             "ticks=$ticks"
                     )
-                    // 高刷减半分频判定（idleDecay 会话）：**实测平均帧间隔**而非
-                    // display.refreshRate 一次性采样——LTPO 动态刷新率下后者随状态漂移
-                    // （重进应用/页面切换时 120/90/60 读数各异，一次性判定失真且跨会话
-                    // 不一致）；分频按**帧计数**（偶数帧 tick）不按 ns 时长——任意刷新率下
-                    // 恒为整数倍、零拍频（ns 门控在非整数比率下必拍频，相册教训）
-                    halfRateDivider = if (session.idleDecayTickEnabled &&
-                        sumNs > 0L && 1_000_000_000L / (sumNs / 120) > 66L
+                    // 高刷减半分频判定（idleDecay 会话，**默认关**）：**实测平均帧间隔**
+                    // 而非 display.refreshRate 一次性采样——LTPO 动态刷新率下后者随状态
+                    // 漂移（重进应用/页面切换时 120/90/60 读数各异，一次性判定失真且跨
+                    // 会话不一致）；分频按**帧计数**（偶数帧 tick）不按 ns 时长——任意刷新率
+                    // 下恒为整数倍、零拍频（ns 门控在非整数比率下必拍频，相册教训）。
+                    // **默认关的依据**：本模块手册已登记"活动档分频 = 玻璃落后半帧拖影
+                    // 不跟手"（相册 №02.2/№02.7）与"60Hz 特效叠 120fps 内容 = 拍频"
+                    // （相册 №02.2 限帧实验）——每 tick 重编码成本改由显示列表引用
+                    // （ViewDisplayList）从源头消除，不再用降频换流畅。仅面板 ≥100Hz
+                    // 且远程显式打开（highRefreshHalfRate=true）时减半；90Hz 永不减半
+                    // （旧 >66Hz 判定让 90Hz 掉到 45fps，是明确缺陷）。
+                    halfRateDivider = if (session.highRefreshHalfRate &&
+                        session.idleDecayTickEnabled && sumNs > 0L &&
+                        1_000_000_000L / (sumNs / 120) >= 100L
                     ) 2 else 1
                     frames = 0
                     sumNs = 0
@@ -336,9 +353,10 @@ fun GlassRoot(
             val tickIntervalNs = if (deepIdleWanted) session.deepIdleTickIntervalNs
             else STATIC_TICK_INTERVAL_NS
             if (fullRate) {
-                // 高刷减半分频（idleDecay 会话）：偶数帧才 tick——玻璃条带重录制与
-                // Compose traversal 减半，宿主自绘/液泡/按压/选中动画读各自状态独立
-                // 失效不受影响；8dp 模糊下玻璃 60fps 无感
+                // 高刷减半分频（默认关，远程 highRefreshHalfRate 可开）：偶数帧才 tick
+                // ——玻璃条带重录制与 Compose traversal 减半。默认满帧：降频会让折射层
+                // 落后半帧（相册 №02.7 "拖影不跟手"），每 tick 重编码成本已由显示列表
+                // 引用消除，不再需要降频换流畅。
                 if (halfRateDivider <= 1 || frameIndex % halfRateDivider == 0L) {
                     tickGate[0] = now
                     tick.intValue++
@@ -422,7 +440,28 @@ fun GlassRoot(
         if (appIsDark) Color.Black else Color.White
     }
 
-    Box(Modifier.fillMaxWidth()) {
+    // 玻璃主线程绘制耗时（诊断，120 次一档，与既有 120 帧 frame metrics 同频）：
+    // 用于区分"主线程 Compose 层录制"与"GPU/宿主"瓶颈。累加器无逐帧分配。
+    val drawPerf = remember { GlassDrawPerf() }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .drawWithContent {
+                val started = android.os.SystemClock.elapsedRealtimeNanos()
+                drawContent()
+                val costNs = android.os.SystemClock.elapsedRealtimeNanos() - started
+                if (drawPerf.record(costNs)) {
+                    session.logger?.invoke(
+                        drawPerf.summary() +
+                            " bandLive=${session.liveSamplingActive}" +
+                            " mirrorCfg=${session.viewNodeMirror}" +
+                            " halfRate=${session.highRefreshHalfRate}"
+                    )
+                    drawPerf.reset()
+                }
+            }
+    ) {
         // 辅助玻璃视图层（声明式通道：auxGlassViews 未注入 = auxBounds 恒空，渲染零影响）。
         // 放在外层 Box：坐标相对 ComposeView 原点（内层 BoxWithConstraints 有 48dp 顶部
         // padding，会引入坐标偏移）。胶囊可位于 overlay 布局边界之外（不裁剪、无点击
@@ -434,6 +473,8 @@ fun GlassRoot(
                 style,
                 tick,
                 shape = session.auxGlassShape?.invoke(bounds.view) ?: Capsule(),
+                mirrorEnabled = mirrorEnabled,
+                mirrorReport = mirrorReport,
             )
         }
     BoxWithConstraints(
@@ -553,6 +594,7 @@ fun GlassRoot(
                     refractionAmountScale = style.refractionAmountScale,
                     refractionHeightScale = style.refractionHeightScale,
                     accentColor = specColors.second,
+                    tickRevision = { tick.intValue },
                     onPreviewTabChanged = {
                         session.previewTabChange(it)
                         // 拖动预览翻动底栏原生选中态：开满帧率窗口保即时刷新
@@ -637,6 +679,7 @@ fun GlassRoot(
                                             LiveTabFullPainter(
                                                 tabView,
                                                 tick,
+                                                HostViewMirror(mirrorEnabled, mirrorReport),
                                                 session.extractor.descriptor.wholeTabAlignBottom,
                                             )
                                         }
@@ -654,7 +697,11 @@ fun GlassRoot(
                                         val iconView = tab.iconView
                                         if (iconView != null) {
                                             val iconPainter = remember(iconView) {
-                                                LiveViewPainter(iconView, tick)
+                                                LiveViewPainter(
+                                                    iconView,
+                                                    tick,
+                                                    HostViewMirror(mirrorEnabled, mirrorReport),
+                                                )
                                             }
                                             // 图标镜像盒按 descriptor 覆盖（默认 24dp）：镜像把
                                             // 原生图标视图 fit 缩放进盒内，原生图标视图非 24dp 的
@@ -683,6 +730,7 @@ fun GlassRoot(
                                             { session.tabViews.getOrNull(index)?.let { session.extractor.findLottieView(it) } },
                                             tab.icon,
                                             tick,
+                                            HostViewMirror(mirrorEnabled, mirrorReport),
                                         )
                                     }
                                     Box(
@@ -749,7 +797,13 @@ fun GlassRoot(
                                         // LOTTIE_RESOLVE（商店）：镜像角标 > 文本 > 红点三分支
                                         val badgeView = tab.badgeView
                                         val badgePainter = remember(badgeView) {
-                                            badgeView?.let { LiveViewPainter(it, tick) }
+                                            badgeView?.let {
+                                                LiveViewPainter(
+                                                    it,
+                                                    tick,
+                                                    HostViewMirror(mirrorEnabled, mirrorReport),
+                                                )
+                                            }
                                         }
                                         if (badgePainter != null && badgeView != null) {
                                             Box(
@@ -908,15 +962,18 @@ private fun ExtraActionButton(
                             (height / width).fastCoerceAtMost(1f)
                 },
                 highlight = {
+                    val progress = interactiveHighlight.pressProgress
                     if (edgeHighlight != null) {
                         // 全局边缘光：常态可见，按压继续提亮到 1。
                         edgeHighlight.copy(
                             alpha = (edgeHighlight.alpha +
-                                (1f - edgeHighlight.alpha) * interactiveHighlight.pressProgress)
+                                (1f - edgeHighlight.alpha) * progress)
                                 .coerceIn(0f, 1f)
                         )
+                    } else if (progress <= 0.001f) {
+                        null
                     } else {
-                        Highlight.Default.copy(alpha = interactiveHighlight.pressProgress)
+                        Highlight.Default.copy(alpha = progress)
                     }
                 },
                 innerShadow = if (innerShadow != null) {
@@ -989,13 +1046,23 @@ private fun AuxGlassPill(
     style: GlassStyle,
     tick: IntState,
     shape: androidx.compose.ui.graphics.Shape,
+    mirrorEnabled: () -> Boolean,
+    mirrorReport: (key: String, message: String) -> Unit,
 ) {
     val isLightTheme = !isSystemInDarkTheme()
     val containerColor =
         if (isLightTheme) Color(0xFFFAFAFA).copy(alpha = style.surfaceAlpha)
         else Color(0xFF121212).copy(alpha = style.surfaceAlpha)
     val density = LocalDensity.current
-    val mirrorPainter = remember(bounds.view) { LiveViewPainter(bounds.view, tick) }
+    // 目标视图通常被适配器压成 alpha=0：ViewDisplayList 的等价性判定会回退直绘
+    // （直绘不施加视图自身 alpha），与旧行为逐位一致；alpha=1 的压制方式则走显示列表。
+    val mirrorPainter = remember(bounds.view) {
+        LiveViewPainter(
+            bounds.view,
+            tick,
+            HostViewMirror(mirrorEnabled, mirrorReport),
+        )
+    }
     Box(
         Modifier
             .offset { IntOffset(bounds.offsetX, bounds.offsetY) }
@@ -1045,15 +1112,109 @@ private const val REASSERT_INTERVAL_NS = 2_000_000_000L
 private const val TAP_FORWARD_SUPPRESS_MS = 1500L
 
 /**
+ * 玻璃根节点主线程绘制耗时累加器（诊断）：每次 draw 记录一次耗时，120 次为一档，
+ * 由调用方在窗口满时输出并 [reset]。只做 long 累加，避免逐帧分配。
+ *
+ * 判读：`glass draw avg` = 主线程录制玻璃 Compose 图层（含条带回放/镜像绘制）的成本，
+ * 不含 RenderThread 栅格化与宿主自身 traversal。与同窗口的 `frame metrics` 对照可区分
+ * "主线程玻璃成本高"（avg 接近帧预算）与"GPU/宿主瓶颈"（avg 小但 frame max 大）。
+ */
+private class GlassDrawPerf {
+    private var count = 0
+    private var sumNs = 0L
+    private var maxNs = 0L
+
+    /** 记录一次；返回 true = 本档已满（调用方输出 [summary] 后 [reset]）。 */
+    fun record(costNs: Long): Boolean {
+        count++
+        sumNs += costNs
+        if (costNs > maxNs) maxNs = costNs
+        return count >= 120
+    }
+
+    fun summary(): String =
+        "glass draw: avg=${sumNs / count / 1_000}us max=${maxNs / 1_000}us n=$count"
+
+    fun reset() {
+        count = 0
+        sumNs = 0L
+        maxNs = 0L
+    }
+}
+
+/**
+ * 宿主视图镜像绘制：优先引用视图已录制的显示列表（[ViewDisplayList]，主线程零重编码），
+ * 不可用/回放失败时由调用方回退单参 `view.draw`（信号抑制防自激）。
+ *
+ * 每个 Painter 各持一个实例：`nodeFailed` 只让该视图永久回退，不波及同一会话的其它
+ * 镜像；模式切换日志经 [report] 交给会话去重（首次 live 生效 / 首次回退各一条）。
+ * 等价性前置条件（节点位置/alpha/变换/阴影/特效/层类型）由 [ViewDisplayList] 统一
+ * 判定与位置补偿——不满足即回退，保证默认配置下行为与 2.9.91 直绘一致。
+ *
+ * 返回 Boolean 而不是接受回退 lambda：120Hz 下每帧 8~12 次镜像调用，闭包分配是
+ * 无谓的 GC 压力（2.9.92 版本形态）。
+ */
+private class HostViewMirror(
+    private val liveSampling: () -> Boolean,
+    private val report: (key: String, message: String) -> Unit,
+) {
+    private var nodeFailed = false
+    private var lastMode: Boolean? = null
+
+    /** true = 已用显示列表绘制；false = 调用方本帧回退直绘。 */
+    fun tryDraw(canvas: android.graphics.Canvas, view: View): Boolean {
+        if (!liveSampling() || nodeFailed) return false
+        return when (ViewDisplayList.tryDraw(canvas, view)) {
+            ViewDisplayList.Result.DRAWN -> {
+                if (lastMode != true) {
+                    lastMode = true
+                    report(
+                        "mirror-live",
+                        "view mirror: display list (no per-frame host redraw)",
+                    )
+                }
+                true
+            }
+
+            ViewDisplayList.Result.FAILED -> {
+                nodeFailed = true
+                if (lastMode != false) {
+                    lastMode = false
+                    report(
+                        "mirror-failed",
+                        "view mirror: display list replay failed, fallback to view.draw",
+                    )
+                }
+                false
+            }
+
+            ViewDisplayList.Result.UNAVAILABLE -> {
+                if (lastMode != false) {
+                    lastMode = false
+                    report(
+                        "mirror-fallback",
+                        "view mirror: fallback view.draw " +
+                            "(reason=${ViewDisplayList.reasonOf(view)})",
+                    )
+                }
+                false
+            }
+        }
+    }
+}
+
+/**
  * 商店 tab 图标逐帧镜像 Painter：每帧经 [viewProvider] 解析当前应镜像的视图
- * （LOTTIE_RESOLVE 模式下应用切换 Lottie 可见性，首页 ⇄ 刷新），直绘硬件画布——
- * 原色、原生动画、原生清晰度；无视图可解析时回退装配期的 3x 位图快照。
+ * （LOTTIE_RESOLVE 模式下应用切换 Lottie 可见性，首页 ⇄ 刷新），优先引用该视图
+ * 已录制的显示列表（[ViewDisplayList]），不可用时回退直绘硬件画布——原色、原生动画、
+ * 原生清晰度；无视图可解析时回退装配期的 3x 位图快照。
  * 可见性按 isShown（沿父链）判定：应用隐藏底栏时镜像同步消失。
  */
 private class LiveIconPainter(
     private val viewProvider: () -> View?,
     private val fallback: android.graphics.Bitmap?,
     private val tick: IntState,
+    private val mirror: HostViewMirror,
 ) : Painter() {
     override val intrinsicSize = Size.Unspecified
 
@@ -1074,21 +1235,25 @@ private class LiveIconPainter(
         if (!target.isShown || target.width <= 0 || target.height <= 0) return
         canvas.save()
         canvas.scale(size.width / target.width, size.height / target.height)
-        // 单参直绘宿主图标视图（无渲染节点复用，onDraw 无条件触发）：信号抑制
-        // 防自激（被 hook 的 ImageView.onDraw 等），见 GlassSession.signalSuppressed
-        GlassSession.withSignalSuppression { target.draw(canvas) }
+        // 优先显示列表引用（零重编码 + 节点位置补偿）；回退单参直绘 + 信号抑制防自激
+        if (!mirror.tryDraw(canvas, target)) {
+            GlassSession.withSignalSuppression { target.draw(canvas) }
+        }
         canvas.restore()
     }
 }
 
 /**
- * WHOLE_TAB 图标/角标逐帧镜像 Painter：固定镜像目标视图，直绘硬件画布——
- * 原色、原始 alpha、原生动画，不做任何处理。可见性按 isShown（沿父链）判定：
- * 应用隐藏底栏（如进入照片大图）时镜像同步消失。
+ * WHOLE_TAB 图标/角标逐帧镜像 Painter：固定镜像目标视图，优先引用其已录制显示列表
+ * （[ViewDisplayList]），不可用时回退直绘硬件画布——原色、原始 alpha、原生动画，
+ * 不做任何处理。可见性按 isShown（沿父链）判定：应用隐藏底栏（如进入照片大图）时
+ * 镜像同步消失。被适配器压成 alpha=0 的视图（辅助玻璃目标）由等价性判定自动回退
+ * 直绘（显示列表会施加视图自身 alpha，直绘不会）。
  */
 private class LiveViewPainter(
     private val view: View,
     private val tick: IntState,
+    private val mirror: HostViewMirror,
 ) : Painter() {
     override val intrinsicSize = Size.Unspecified
 
@@ -1100,8 +1265,9 @@ private class LiveViewPainter(
         val canvas = drawContext.canvas.nativeCanvas
         canvas.save()
         canvas.scale(size.width / vw, size.height / vh)
-        // 单参直绘宿主图标视图：信号抑制防自激（同 LiveIconPainter）
-        GlassSession.withSignalSuppression { view.draw(canvas) }
+        if (!mirror.tryDraw(canvas, view)) {
+            GlassSession.withSignalSuppression { view.draw(canvas) }
+        }
         canvas.restore()
     }
 }
@@ -1169,6 +1335,7 @@ private class ItemForegroundPainter(
 private class LiveTabFullPainter(
     private val view: View,
     private val tick: IntState,
+    private val mirror: HostViewMirror,
     private val alignBottom: Boolean = false,
 ) : Painter() {
     override val intrinsicSize = Size.Unspecified
@@ -1182,9 +1349,11 @@ private class LiveTabFullPainter(
         canvas.save()
         val offsetY = if (alignBottom) size.height - vh else (size.height - vh) / 2f
         canvas.translate((size.width - vw) / 2f, offsetY)
-        // 单参直绘宿主条目视图（小黑盒 = CompoundButton 条目，onDraw 被信号管线
-        // hook）：信号抑制防自激（同 LiveIconPainter）
-        GlassSession.withSignalSuppression { view.draw(canvas) }
+        // 优先显示列表引用（小黑盒/微博/小红书整条目镜像的主线程成本消除，节点位置
+        // 由 ViewDisplayList.drawNode 补偿）；回退单参直绘 + 信号抑制防自激
+        if (!mirror.tryDraw(canvas, view)) {
+            GlassSession.withSignalSuppression { view.draw(canvas) }
+        }
         canvas.restore()
     }
 }

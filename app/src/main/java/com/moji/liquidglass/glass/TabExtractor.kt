@@ -106,6 +106,13 @@ data class TabBarDescriptor(
      *  底部 51dp）居中镜像会把条目底部（标签）裁出槽位，按应用声明改底对齐——条目
      *  底边贴槽位底边（与原生布局关系一致），超出槽位的只有条目顶部空白边。 */
     val wholeTabAlignBottom: Boolean = false,
+    /** 条带显示列表采样逃生门（默认 false = 引擎默认引用内容视图已录制的 RenderNode
+     *  采样，主线程零重编码）。个别应用内容显示列表跨分支回放异常（ROM/HWUI 拒绝、
+     *  内容异常）时按应用声明 true，回退 2.9.91 的每 tick `view.draw()` 直绘。 */
+    val backdropDirectDraw: Boolean = false,
+    /** 镜像显示列表逃生门（默认 false = 引擎默认引用宿主视图已录制的 RenderNode 镜像，
+     *  主线程零重编码）。声明 true 回退 2.9.91 的每 tick `view.draw()` 镜像。 */
+    val viewDirectMirror: Boolean = false,
     /** 附加操作按钮（默认 null = 既有应用逐位不变，§0.4 红线）。声明后玻璃栏右侧
      *  出现一枚**独立**的方形着色玻璃图标按钮（参考项目 Glass Bottom Bar 教程
      *  "Exercise: Add a tinted glass icon button" 同构：栏与按钮平行同高、8dp 间距、

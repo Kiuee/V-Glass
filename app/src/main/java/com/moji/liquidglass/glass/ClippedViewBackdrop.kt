@@ -84,12 +84,14 @@ class ClippedViewBackdrop(
     private val viewPosition: () -> Offset,
     /** 采样去重开关（默认 { false } = 各自直绘，历史行为）。 */
     private val dedupe: () -> Boolean = { false },
-    /** 实时显示列表采样（默认 { false } = 每帧 `view.draw()` 重编码，历史行为；由
-     *  GlassSession.backdropLiveNodeSampling 注入，仅相册声明）。true 时去重路径不再
-     *  重画内容树，改为引用内容视图自身已录制的 RenderNode——主线程每帧零重编码，
-     *  条带内容仍是应用当帧录制的显示列表（无降频滞后）；取不到 RenderNode 时自动
-     *  回退 `view.draw()`。 */
-    private val liveNodeSampling: () -> Boolean = { false },
+    /** 实时显示列表采样（**引擎默认 true** = 引用内容视图自身已录制的 RenderNode，
+     *  仅几何变化/唤醒时重录；由 `GlassSession.backdropLiveNodeSampling` 注入，TargetHook
+     *  按配置 `liveNodeSampling` 与 descriptor `backdropDirectDraw` 统一设置）。取不到
+     *  RenderNode 时自动回退每 tick `view.draw()` 重录路径。 */
+    private val liveNodeSampling: () -> Boolean = { true },
+    /** 显示列表采样生效状态回调（true = 本次走 live 路径，false = 回退直绘）：供会话
+     *  记录 `liveSamplingActive`（小黑盒滚动冻结门控据此降级为"仅 live 失效时兜底"）。 */
+    private val onLiveSampling: (Boolean) -> Unit = {},
     /** 采样冻结门控（默认 { false } = 不冻结；声明式通道 backdropFreezeGate 经 GlassRoot
      *  注入）。true = 不对 [view] 做逐帧外部 draw：**进入冻结时一次性录制**条带进
      *  bandNode，冻结期间纯回放（零外部 draw）——外部高频 view.draw 会打乱 WebView 等
@@ -151,44 +153,29 @@ class ClippedViewBackdrop(
     @Volatile private var frozen = false
 
     // —— 实时显示列表采样（liveNodeSampling）状态 ——
-    /** 内容视图自身的 RenderNode（隐藏 API，API 29+）：取不到即为 null → 回退 view.draw。 */
-    private val renderNodeField: java.lang.reflect.Field? by lazy {
-        runCatching {
-            android.view.View::class.java.getDeclaredField("mRenderNode").apply { isAccessible = true }
-        }.getOrNull()
-    }
     /** 条带显示列表当前是否引用着实时内容节点（true 时后续 tick 只回放、不重录）。 */
     private var liveBandRecorded = false
     /** 当前条带引用的内容节点（视图重建/换节点时身份变化 → 重录）。 */
     private var recordedLiveNode: android.graphics.RenderNode? = null
     /** live 路径的 tick 标记（与既有路径 recordedTick 相互独立，互不污染回退语义）。 */
     private var liveBandTick = Int.MIN_VALUE
-    private var recordedBounds = BandBounds(0, 0, 0)
+    /** 上次录制时的条带几何（内容坐标系）：top/width/height 全等才免重录。 */
+    private var recordedTop = Int.MIN_VALUE
+    private var recordedWidth = 0
+    private var recordedHeight = 0
+    /** 上次录制时内容节点自身的 LTRB 偏移（RenderNode 绘制会施加 left/top，录制期由
+     *  ViewDisplayList.drawNode 平移抵消；节点位置变化必须重录，否则补偿量失效）。 */
+    private var recordedContentLeft = Int.MIN_VALUE
+    private var recordedContentTop = Int.MIN_VALUE
     private var liveLogged = false
     private var liveFallbackLogged = false
 
-    /** 条带在内容坐标系里的几何（用于判定是否需要重录：栏位移/旋转/inset 变化会变）。 */
-    private class BandBounds(val top: Int, val width: Int, val height: Int) {
-        override fun equals(other: Any?): Boolean =
-            other is BandBounds && other.top == top && other.width == width && other.height == height
+    /** 条带裁剪路径复用（每次绘制重建顶点，不分配新 Path——4 个玻璃节点 × 每帧）。 */
+    private val bandPath = Path()
 
-        override fun hashCode(): Int = (top * 31 + width) * 31 + height
-    }
-
-    private fun contentRenderNode(): android.graphics.RenderNode? {
-        if (Build.VERSION.SDK_INT < 29) return null
-        // 优先取字段（View.mRenderNode），不可用时再试隐藏方法 getRenderNode()；两者
-        // 都失败（ROM 隐藏 API 限制）→ 返回 null，由调用方回退 view.draw()。
-        val node = runCatching {
-            renderNodeField?.get(view) as? android.graphics.RenderNode
-        }.getOrNull() ?: runCatching {
-            android.view.View::class.java
-                .getDeclaredMethod("getRenderNode")
-                .apply { isAccessible = true }
-                .invoke(view) as? android.graphics.RenderNode
-        }.getOrNull() ?: return null
-        return node.takeIf { runCatching { it.hasDisplayList() }.getOrDefault(false) }
-    }
+    /** 实时内容显示列表（隐藏 API `View.mRenderNode`，取不到/未绘制/alpha 等不等价时
+     *  返回 null → 调用方回退 `view.draw()`）。 */
+    private fun contentRenderNode(): android.graphics.RenderNode? = ViewDisplayList.nodeOf(view)
 
     override fun DrawScope.drawBackdrop(
         density: Density,
@@ -264,7 +251,7 @@ class ClippedViewBackdrop(
             frozen = false
             log?.invoke("backdrop freeze off (resume live sampling)")
         }
-        // 实时显示列表采样（liveNodeSampling，默认关）：条带只在几何变化/唤醒时重录，
+        // 实时显示列表采样（liveNodeSampling，引擎默认开）：条带只在几何变化/唤醒时重录，
         // 其余 tick 纯回放——内容更新由内容视图自身当帧的显示列表自动跟随（零滞后）。
         // 取不到 RenderNode 时回退下面的每 tick 重录路径（两种路径的录制标记相互独立）。
         if (node != null && !dedupeDisabled && dedupe() && liveNodeSampling() &&
@@ -309,19 +296,19 @@ class ClippedViewBackdrop(
      *  已录制的 RenderNode（回放时由 RenderThread 栅格化并裁到条带）。
      *
      *  单节点直录（2.7.2 结构；历史上的 srcNode 双节点 + 边界镜像合成已整体移除，
-     *  见类 KDoc"采样源边界镜像"历史注记）。每 tick 仍只有一次内容树遍历（`view.draw`
-     *  或 live 引用）。 */
+     *  见类 KDoc"采样源边界镜像"历史注记）。live 路径只在几何变化时进这里（一次
+     *  drawRenderNode 命令，主线程零重编码）；回退路径每 tick 一次（`view.draw` 全树）。 */
     private fun DrawScope.recordBand(
         node: android.graphics.RenderNode,
         coordinates: LayoutCoordinates,
         liveContent: android.graphics.RenderNode? = null,
-    ): BandBounds {
+    ): BandGeometry {
         if (!enableLogged) {
             enableLogged = true
             log?.invoke("band dedupe enabled (full-width strip)")
         }
         val started = SystemClock.elapsedRealtimeNanos()
-        val bounds = bandBounds(coordinates)
+        val bounds = fillBandGeometry(coordinates)
         node.setPosition(0, bounds.top, bounds.width, bounds.top + bounds.height)
         val canvas = node.beginRecording(bounds.width, bounds.height)
         try {
@@ -349,25 +336,38 @@ class ClippedViewBackdrop(
         liveContent: android.graphics.RenderNode?,
     ) {
         if (liveContent != null) {
-            canvas.drawRenderNode(liveContent)
-        } else {
-            GlassSession.withSignalSuppression { view.draw(canvas) }
+            // RenderNode 绘制会施加节点 LTRB（2.9.92 回归根因）：drawNode 内统一
+            // 平移 (-left,-top) 还原成 View.draw 的 (0,0) 语义；失败则本帧回退直绘。
+            if (ViewDisplayList.drawNode(canvas, liveContent)) return
         }
+        GlassSession.withSignalSuppression { view.draw(canvas) }
     }
+
+    /** 条带在内容坐标系里的几何（复用实例，避免每 tick 分配：内容视图每帧多次消费者
+     *  调用 live 判定）。 */
+    private class BandGeometry {
+        var top: Int = 0
+        var width: Int = 0
+        var height: Int = 0
+    }
+
+    private val bandGeometry = BandGeometry()
 
     /** 条带几何（内容坐标系）：高度 = 当前消费者条带 + 上下边距（每侧 = [bandPerSideMargin]
      *  + [bandExtraExtent]——8dp 兜底主层与副本/液泡条带的 4dp 垂直错位；外扩生效时边距
      *  随之外扩保证采样环落在条带录制范围内；联合外扩供 dedupe 共享条带按最大消费者覆盖，
      *  内容坐标系锚定使多录无害）；原点 = glassPos − viewPos。 */
-    private fun DrawScope.bandBounds(coordinates: LayoutCoordinates): BandBounds {
+    private fun DrawScope.fillBandGeometry(coordinates: LayoutCoordinates): BandGeometry {
         val perSideMargin = bandPerSideMargin() + bandExtraExtent()
         val bandHeight = size.height.toInt() + (perSideMargin * 2f).toInt().coerceAtLeast(1)
         val marginPx = bandHeight - size.height.toInt()
         val viewPos = viewPosition()
         val glassPos = coordinates.positionInWindow()
-        val bandTop = (glassPos.y - viewPos.y).toInt() - marginPx / 2
-        val width = view.width.coerceAtLeast(1)
-        return BandBounds(bandTop, width, bandHeight)
+        return bandGeometry.apply {
+            top = (glassPos.y - viewPos.y).toInt() - marginPx / 2
+            width = view.width.coerceAtLeast(1)
+            height = bandHeight
+        }
     }
 
     /**
@@ -384,30 +384,43 @@ class ClippedViewBackdrop(
     ): Boolean {
         if (liveBandTick != tickValue) {
             liveBandTick = tickValue
-            val bounds = bandBounds(coordinates)
             val live = contentRenderNode()
             if (live == null) {
                 liveBandRecorded = false
+                onLiveSampling(false)
                 if (!liveFallbackLogged) {
                     liveFallbackLogged = true
-                    log?.invoke("band sampling: content render node unavailable, fallback to view.draw")
+                    log?.invoke(
+                        "band sampling: content render node unavailable " +
+                            "(reason=${ViewDisplayList.reasonOf(view)}), fallback to view.draw"
+                    )
                 }
                 return false
             }
+            val bounds = fillBandGeometry(coordinates)
             if (!liveBandRecorded || live !== recordedLiveNode || forceRecord() ||
-                bounds != recordedBounds
+                live.left != recordedContentLeft || live.top != recordedContentTop ||
+                bounds.top != recordedTop || bounds.width != recordedWidth ||
+                bounds.height != recordedHeight
             ) {
                 val ok = runCatching { recordBand(node, coordinates, live) }
-                if (ok.isSuccess) {
+                val recorded = ok.getOrNull()
+                if (recorded != null) {
                     liveBandRecorded = true
                     recordedLiveNode = live
-                    recordedBounds = bounds
+                    recordedContentLeft = live.left
+                    recordedContentTop = live.top
+                    recordedTop = recorded.top
+                    recordedWidth = recorded.width
+                    recordedHeight = recorded.height
+                    onLiveSampling(true)
                     if (!liveLogged) {
                         liveLogged = true
                         log?.invoke("band sampling: live content render node (no per-frame content redraw)")
                     }
                 } else {
                     liveBandRecorded = false
+                    onLiveSampling(false)
                     if (!liveFallbackLogged) {
                         liveFallbackLogged = true
                         log?.invoke("band sampling: live record failed, fallback to view.draw: ${ok.exceptionOrNull()}")
@@ -416,6 +429,7 @@ class ClippedViewBackdrop(
                 }
             }
         } else if (!liveBandRecorded) {
+            onLiveSampling(false)
             return false
         }
         drawIntoCanvas { canvas ->
@@ -475,13 +489,12 @@ class ClippedViewBackdrop(
         // 0.01px 顶点偏移：阻断 Skia 对轴对齐矩形路径的 scissor 简化（强制 stencil
         // 裁剪路径），视觉不可感知
         val irregular = 0.01f
-        val bandPath = Path().apply {
-            moveTo(-margin, -margin + irregular)
-            lineTo(size.width + margin, -margin)
-            lineTo(size.width + margin, size.height + margin)
-            lineTo(-margin, size.height + margin)
-            close()
-        }
+        bandPath.reset()
+        bandPath.moveTo(-margin, -margin + irregular)
+        bandPath.lineTo(size.width + margin, -margin)
+        bandPath.lineTo(size.width + margin, size.height + margin)
+        bandPath.lineTo(-margin, size.height + margin)
+        bandPath.close()
         nc.clipPath(bandPath)
     }
 
