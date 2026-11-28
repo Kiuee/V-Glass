@@ -51,6 +51,7 @@
     <string name="apps_hide_adapted_versions">收起已适配版本</string>
     <string name="adapted_versions_title">已适配版本</string>
     <string name="app_installed_version_fmt">当前安装：%1$s</string>
+    <string name="apps_refresh">刷新</string>
     <string name="apps_refresh_adapted_versions">刷新免适配版本表</string>
     <string name="apps_adapted_versions_updated_fmt">免适配版本表已更新（更新于 %1$s）</string>
     <string name="apps_adapted_versions_unchanged">免适配版本表已是最新</string>

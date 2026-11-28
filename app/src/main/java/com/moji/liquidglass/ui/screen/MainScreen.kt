@@ -3,6 +3,11 @@ package com.moji.liquidglass.ui.screen
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -81,6 +86,7 @@ fun MainScreen(
     val searchCancel = stringResource(R.string.action_cancel)
     val searchClear = stringResource(R.string.apps_search_clear)
     val refreshLabel = stringResource(R.string.apps_refresh_adapted_versions)
+    val refreshText = stringResource(R.string.apps_refresh)
 
     var page by rememberSaveable { mutableIntStateOf(0) }
     val pageState = rememberSaveableStateHolder()
@@ -88,6 +94,13 @@ fun MainScreen(
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     val searchState = rememberCouiSearchBarState(searchExpanded)
     var refreshing by remember { mutableStateOf(false) }
+    val refreshSpin = rememberInfiniteTransition(label = "refresh")
+    val refreshAngle by refreshSpin.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 900, easing = LinearEasing)),
+        label = "refreshAngle",
+    )
     val scrolls = List(3) { rememberScrollState() }
     val headers = List(3) { index ->
         CouiTopAppBarDefaults.exitUntilCollapsedScrollBehavior(
@@ -188,11 +201,17 @@ fun MainScreen(
                                         description = refreshLabel,
                                         onClick = refresh,
                                         enabled = !refreshing,
+                                        label = refreshText,
+                                        labelColor = colors.title,
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.Refresh,
                                             contentDescription = null,
-                                            modifier = Modifier.size(24.dp),
+                                            modifier = Modifier
+                                                .size(18.dp)
+                                                .graphicsLayer {
+                                                    rotationZ = if (refreshing) refreshAngle else 0f
+                                                },
                                             tint = colors.title,
                                         )
                                     }
